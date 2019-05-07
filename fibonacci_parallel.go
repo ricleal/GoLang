@@ -5,12 +5,18 @@ import (
 	"runtime"
 )
 
+// represents one value and the respective fibonacci value
+type fib_data struct {
+	value     int
+	fib_value int
+}
+
 func main() {
 	input_channel := make(chan int, 100)
-	output_channel := make(chan int, 100)
+	output_channel := make(chan fib_data, 100)
 
 	number_of_cores := runtime.NumCPU()
-	N := 45 // number of fib to calculate
+	N := 40 // number of fib to calculate
 
 	// Launch the workers
 	for i := 0; i < number_of_cores-1; i++ {
@@ -23,19 +29,20 @@ func main() {
 	close(input_channel)
 	// Get the results of the fib
 	for j := 0; j < N; j++ {
-		fmt.Println(<-output_channel)
+		fib_pair := <-output_channel
+		fmt.Println(fib_pair.value, "->", fib_pair.fib_value)
 	}
 	close(output_channel)
 }
 
-func worker(input_channel <-chan int, output_channel chan<- int) {
+func worker(input_channel <-chan int, output_channel chan<- fib_data) {
 	// iterate over the values previously put in the input channel
 	for n := range input_channel {
-		output_channel <- fib(n)
+		output_channel <- fib_data{n, fib(n)}
 	}
 }
 
-// inefficient fibonnaci code
+// inefficient fibonacci calculation
 func fib(n int) int {
 	if n <= 1 {
 		return n
