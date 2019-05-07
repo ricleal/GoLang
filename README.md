@@ -1,6 +1,6 @@
-# GoLand
+# Go Lang
 
-Where I put my go tests..
+Adventures of the Go Lang in the Go Land
 
 # Run
 
