@@ -49,7 +49,8 @@ func v1() {
 	if err != nil {
 		panic(err)
 	}
-	fmt.Printf("%s\n", string(prettyJSON))
+	// fmt.Printf("%s\n", string(prettyJSON))
+	_ = prettyJSON
 }
 
 func v2() {
@@ -73,12 +74,14 @@ func v2() {
 	if err != nil {
 		panic(err)
 	}
-	fmt.Printf("%s\n", string(prettyJSON))
+	// fmt.Printf("%s\n", string(prettyJSON))
+	_ = prettyJSON
 
 }
 
 // DownloadFile will download a url to a local file. It's efficient because it will
-// write as it downloads and not load the whole file into memory. (from https://golangcode.com/download-a-file-with-progress/)
+// write as it downloads and not load the whole file into memory.
+// (from https://golangcode.com/download-a-file-with-progress/)
 func downloadFile(filepath string) (err error) {
 
 	// Create the ouput file
