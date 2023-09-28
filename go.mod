@@ -3,6 +3,6 @@ module exp
 go 1.20
 
 require (
-	github.com/gocarina/gocsv v0.0.0-20230616125104-99d496ca653d
+	golang.org/x/exp v0.0.0-20230817173708-d852ddb80c63
 	golang.org/x/sync v0.3.0
 )
