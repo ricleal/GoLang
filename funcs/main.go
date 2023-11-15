@@ -25,8 +25,16 @@ func outer(outerParam int, innerFunc innerFunc) error {
 }
 
 func main() {
-	err := outer(10, inner)
-	if err != nil {
+	// outerFunc called with: 10
+	if err := outer(10, inner); err != nil {
+		log.Println("Error calling outer:", err)
+	}
+
+	// outerFunc called with: 11 inline innerFunc
+	if err := outer(11, func(s string) error {
+		log.Println("inline innerFunc called with:", s)
+		return nil
+	}); err != nil {
 		log.Println("Error calling outer:", err)
 	}
 }
