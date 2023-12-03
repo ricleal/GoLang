@@ -24,6 +24,11 @@ func outer(outerParam int, innerFunc innerFunc) error {
 	return innerFunc(innerParam)
 }
 
+// func that receives a func as a parameter
+func otherFunc(p string, f func(string) string) string {
+	return f(p)
+}
+
 func main() {
 	// outerFunc called with: 10
 	if err := outer(10, inner); err != nil {
@@ -37,4 +42,17 @@ func main() {
 	}); err != nil {
 		log.Println("Error calling outer:", err)
 	}
+
+	// otherFunc to return Hello World
+	r := otherFunc("World", func(s string) string {
+		return fmt.Sprintf("Hello %s", s)
+	})
+	log.Println(r)
+	// otherFunc to return Hello Ricardo!
+	f := func(s string) string {
+		return fmt.Sprintf("Hello %s!", s)
+	}
+	r = otherFunc("Ricardo", f)
+	log.Println(r)
+
 }

@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-func main() {
+func Executor() {
 	// Create a context and cancel function
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -62,4 +62,8 @@ func waitForResult(resultCh <-chan int) int {
 	// block until a result is received
 	result := <-resultCh
 	return result
+}
+
+func main() {
+	Executor()
 }
