@@ -24,7 +24,7 @@ func Consumer(ctx context.Context) {
 	// block until a signal is received
 	<-ctx.Done()
 
-	log.Printf("Signal received: %v. Waiting for workers. Shutting down...\n", ctx.Err())
+	log.Printf("Signal received: '%v'. Waiting for workers. Shutting down...\n", ctx.Err())
 	// give workers time to finish
 	wg.Wait()
 	log.Printf("Shutdown complete ✅")
