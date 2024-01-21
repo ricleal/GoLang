@@ -11,8 +11,9 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
-	"sync"
 	"time"
+
+	"github.com/bradfitz/gomemcache/memcache"
 )
 
 type CacheEntry struct {
@@ -21,37 +22,34 @@ type CacheEntry struct {
 }
 
 type Cache struct {
-	mutex sync.Mutex
-	cache map[string]CacheEntry
+	mc *memcache.Client
 }
 
+// NewCache creates a new cache instance
 func NewCache() *Cache {
+	mc := memcache.New("localhost:11211")
 	return &Cache{
-		cache: make(map[string]CacheEntry),
+		mc: mc,
 	}
 }
 
-func (c *Cache) Get(key string) ([]byte, bool) {
-	c.mutex.Lock()
-	defer c.mutex.Unlock()
-
-	entry, exists := c.cache[key]
-	if !exists || time.Now().After(entry.Expiration) {
-		delete(c.cache, key)
-		return nil, false
+// Get returns the value for the given key
+func (c *Cache) Get(key string) ([]byte, error) {
+	item, err := c.mc.Get(key)
+	if err != nil {
+		return nil, err
 	}
-
-	return entry.Body, true
+	return item.Value, nil
 }
 
-func (c *Cache) Set(key string, body []byte, expiration time.Time) {
-	c.mutex.Lock()
-	defer c.mutex.Unlock()
-
-	c.cache[key] = CacheEntry{
-		Body:       body,
-		Expiration: expiration,
+// Set sets the value for the given key
+func (c *Cache) Set(key string, value []byte) error {
+	item := &memcache.Item{
+		Key:        key,
+		Value:      value,
+		Expiration: 0,
 	}
+	return c.mc.Set(item)
 }
 
 func buildHash(body []byte) string {
@@ -65,6 +63,11 @@ func makeCacheKey(req *http.Request) string {
 	return buildHash([]byte(keyPrefix))
 }
 
+// NewCachingReverseProxy creates a new reverse proxy instance
+// that caches the responses
+// It uses the given cache instance to store the responses
+// It uses the given targetURL to perform the actual requests
+// It uses the default http.Transport to perform the requests
 func NewCachingReverseProxy(targetURL *url.URL, cache *Cache) *httputil.ReverseProxy {
 	transport := &http.Transport{
 		Proxy: http.ProxyFromEnvironment,
@@ -88,16 +91,13 @@ func NewCachingReverseProxy(targetURL *url.URL, cache *Cache) *httputil.ReverseP
 			cache:          cache,
 		},
 		ModifyResponse: func(response *http.Response) error {
-			// Cache the response for a certain duration
-			expiration := time.Now().Add(5 * time.Minute)
 			cacheKey := makeCacheKey(response.Request)
 			// Read the response body
 			body, err := httputil.DumpResponse(response, true)
 			if err != nil {
 				return err
 			}
-			cache.Set(cacheKey, body, expiration)
-			return nil
+			return cache.Set(cacheKey, body)
 		},
 	}
 }
@@ -107,10 +107,14 @@ type cachingTransport struct {
 	cache          *Cache
 }
 
+// RoundTrip performs the actual request and caches the response
+// if it is not already in the cache
+// It also adds the X-Forwarded-For header to the request
+// to indicate the original client IP address
 func (c *cachingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	// Check if the response is in the cache
 	cacheKey := makeCacheKey(req)
-	if cachedResponse, ok := c.cache.Get(cacheKey); ok {
+	if cachedResponse, err := c.cache.Get(cacheKey); err == nil {
 		log.Println("Serving from cache:", cacheKey)
 		// Build the response from the cached response
 		resp, err := http.ReadResponse(bufio.NewReader(bytes.NewReader(cachedResponse)), req)
@@ -141,5 +145,7 @@ func main() {
 
 	port := 8080
 	log.Printf("Listening on :%d...\n", port)
-	http.ListenAndServe(fmt.Sprintf("localhost:%d", port), nil)
+	if err := http.ListenAndServe(fmt.Sprintf("localhost:%d", port), nil); err != nil {
+		log.Fatal(err)
+	}
 }
