@@ -15,20 +15,27 @@ type key struct{}
 func main() {
 	ctx := context.Background()
 
-	zLogger := zap.Must(zap.NewProduction())
+	config := zap.NewProductionConfig()
+	config.Level = zap.NewAtomicLevelAt(zap.InfoLevel)
+	zLogger := zap.Must(
+		config.Build(
+			zap.AddCaller(),
+			zap.AddStacktrace(zap.ErrorLevel),
+		),
+	)
 	ctx = logger.ContextWithLogger(ctx, zLogger)
 
 	zLogger.Info("Hello world")
 
 	{
 		childCtx := context.WithValue(ctx, key{}, "value")
-		childZLogger := zLogger.With(zap.String("key", "value"))
-		childCtx = logger.ContextWithLogger(childCtx, childZLogger)
-		childZLogger = logger.LoggerFromContext(childCtx)
+		childCtx = logger.ContextWithLogger(childCtx, zLogger.With(zap.String("key", "value")))
+		childZLogger := logger.LoggerFromContext(childCtx)
 		childZLogger.Info("Hello world 2")
 
 	}
 
 	zlogger := logger.LoggerFromContext(ctx)
-	zlogger.Info("Hello world 3")
+	zlogger.Error("Hello world 3")
+	zLogger.Debug("Hello world 4")
 }
