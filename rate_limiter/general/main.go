@@ -58,4 +58,15 @@ func main() {
 		allow, nextBatchTime := limiter.Allow()
 		fmt.Printf("Message %d (%v): %.0fs (%s)\n", i, allow, time.Until(nextBatchTime).Seconds(), nextBatchTime.Format("15:04:05"))
 	}
+
+	limiter = NewRateLimiter(10, 1)
+
+	for i := 0; i <= 50; i++ {
+		allow, nextBatchTime := limiter.Allow()
+		fmt.Printf("Message %d (%v): %.0fs (%s)\n", i, allow, time.Until(nextBatchTime).Seconds(), nextBatchTime.Format("15:04:05"))
+		if i%10 == 0 {
+			time.Sleep(1 * time.Second)
+		}
+	}
+
 }
