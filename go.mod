@@ -6,6 +6,7 @@ toolchain go1.21.3
 
 require (
 	github.com/bradfitz/gomemcache v0.0.0-20230905024940-24af94b03874
+	github.com/google/uuid v1.4.0
 	github.com/gorilla/mux v1.8.1
 	github.com/spf13/viper v1.18.2
 	go.uber.org/zap v1.24.0
