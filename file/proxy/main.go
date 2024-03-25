@@ -1,8 +1,10 @@
 package main
 
-// To test
+// To test:
 // http --proxy="http:http://127.0.0.1:8080" "jsonplaceholder.typicode.com/posts/1"                                                                            ──(Thu,Mar21)─┘
 // curl --proxy "http://127.0.0.1:8080" "jsonplaceholder.typicode.com/posts/1"
+// 10 parallel requests:
+// for i in $(seq 10); do http --proxy="http:http://127.0.0.1:8080" "jsonplaceholder.typicode.com/posts/1"&; done
 
 import (
 	"fmt"
