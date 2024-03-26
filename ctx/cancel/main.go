@@ -8,6 +8,10 @@ import (
 	"time"
 )
 
+// This code demonstrates how to launch multiple goroutines, wait for a result from any of them,
+// and then cancel the rest. It's a good example of how to use Go's concurrency primitives for
+// task execution and cancellation.
+
 func Executor() {
 	// Create a context and cancel function
 	ctx, cancel := context.WithCancel(context.Background())

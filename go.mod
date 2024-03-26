@@ -1,13 +1,12 @@
 module exp
 
-go 1.21
-
-toolchain go1.21.3
+go 1.22.1
 
 require (
 	github.com/bradfitz/gomemcache v0.0.0-20230905024940-24af94b03874
 	github.com/google/uuid v1.4.0
 	github.com/gorilla/mux v1.8.1
+	github.com/lmittmann/tint v1.0.4
 	github.com/spf13/viper v1.18.2
 	go.uber.org/zap v1.24.0
 	golang.org/x/exp v0.0.0-20230905200255-921286631fa9
