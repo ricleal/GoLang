@@ -1,5 +1,8 @@
 package main
 
+// Test to make sre DB connection pool is working as expected
+// if more connections are opened than the pool size, the query should wait until a connection is available
+
 import (
 	"database/sql"
 	"fmt"

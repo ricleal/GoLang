@@ -1,5 +1,9 @@
 package main
 
+// Rate limiter using golang.org/x/time/rate
+// This is a simple rate limiter that limits the number of requests per second.
+// The rate limiter is implemented using the golang.org/x/time/rate package.
+
 import (
 	"context"
 	"encoding/json"
@@ -11,6 +15,7 @@ import (
 	"golang.org/x/time/rate"
 )
 
+// RL is a rate limiter struct
 type RL struct {
 	client  *http.Client
 	limiter *rate.Limiter

@@ -1,5 +1,9 @@
 package main
 
+// Rate limiter using a custom implementation
+// This is a simple rate limiter that limits the number of requests per second.
+// The rate limiter is implemented using a custom implementation.
+
 import (
 	"fmt"
 	"math"
@@ -68,5 +72,4 @@ func main() {
 			time.Sleep(1 * time.Second)
 		}
 	}
-
 }

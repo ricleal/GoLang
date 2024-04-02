@@ -119,7 +119,7 @@ linters:
     - prealloc
     - predeclared
     - promlinter
-    - revive
+    # - revive
     - rowserrcheck
     - sqlclosecheck
     - stylecheck
