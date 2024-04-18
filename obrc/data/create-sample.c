@@ -443,12 +443,15 @@ double rand_nd(double mean, double stddev) {
 }
 
 int main(int argc, char **argv) {
-  if (argc <= 1) {
-    printf("usage: create-sample <amount>\n");
+  if (argc != 2 && argc != 3) {
+    printf("usage: create-sample <amount> [path]\n");
     exit(EXIT_SUCCESS);
   }
 
-  FILE *fh = fopen("measurements.txt", "w");
+  // full path is the concatenation of the path (argv[2]) if not null and "measurements.txt"
+  char *path = argv[2] ? strcat(argv[2], "measurements.txt") : "measurements.txt";
+
+  FILE *fh = fopen(path, "w");
   if (!fh) {
     printf("error creating file\n");
     exit(EXIT_FAILURE);

@@ -10,22 +10,26 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"os/signal"
 	"sync"
+	"time"
+
+	"exp/http_server/store"
 )
 
 // Inspired by
 // https://grafana.com/blog/2024/02/09/how-i-write-http-services-in-go-after-13-years/#the-newserver-constructor
 // How I write HTTP services in Go after 13 years
 
-// mock the real implementations
+// mock the real implementations.
 type Config struct {
 	Host string
 	Port string
 }
 
-// DDD: Store is a repository of objects.
-type Service struct{}
+var config = &Config{
+	Host: "localhost",
+	Port: "8080",
+}
 
 // Validator is an object that can be validated.
 type Validator interface {
@@ -58,14 +62,14 @@ func middlewareLog(logger *slog.Logger) func(http.Handler) http.Handler {
 func NewServer(
 	logger *slog.Logger,
 	config *Config,
-	service *Service,
+	st store.Store,
 ) *server {
 	mux := http.NewServeMux()
 	addRoutes(
 		mux,
 		logger,
 		config,
-		service,
+		st,
 	)
 	var handler http.Handler = mux
 	server := &server{handler}
@@ -77,9 +81,9 @@ func addRoutes(
 	mux *http.ServeMux,
 	logger *slog.Logger,
 	config *Config,
-	service *Service,
+	st store.Store,
 ) {
-	mux.Handle("/api/v1", handleSomething(logger, service))
+	mux.Handle("/api/v1", handleSomething(logger, st))
 	mux.HandleFunc("/healthz", handleHealthz(logger))
 	mux.Handle("/", http.NotFoundHandler())
 }
@@ -105,8 +109,8 @@ func (s *something) Valid(ctx context.Context) map[string]string {
 	return problems
 }
 
-func handleSomething(logger *slog.Logger, service *Service) http.Handler {
-	// do something with service
+func handleSomething(logger *slog.Logger, st store.Store) http.Handler {
+	// do something with store
 	return http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) {
 			// use thing to handle request
@@ -171,20 +175,17 @@ func run(
 	stdin io.Reader,
 	stdout, stderr io.Writer,
 ) error {
-	config := &Config{
-		Host: "localhost",
-		Port: "8080",
-	}
 	logger := slog.New(slog.NewTextHandler(stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
-	service := &Service{}
+	st := store.NewMemStore()
 	srv := NewServer(
 		logger,
 		config,
-		service,
+		st,
 	)
 	httpServer := &http.Server{
-		Addr:    net.JoinHostPort(config.Host, config.Port),
-		Handler: srv,
+		Addr:              net.JoinHostPort(config.Host, config.Port),
+		Handler:           srv,
+		ReadHeaderTimeout: 10 * time.Second,
 	}
 	go func() {
 		log.Printf("listening on %s\n", httpServer.Addr)
@@ -207,10 +208,7 @@ func run(
 
 func main() {
 	ctx := context.Background()
-	ctx, cancel := signal.NotifyContext(ctx, os.Interrupt)
-	defer cancel()
 	if err := run(ctx, os.Args, os.Getenv, os.Stdin, os.Stdout, os.Stderr); err != nil {
-		fmt.Fprintf(os.Stderr, "%s\n", err)
 		os.Exit(1)
 	}
 }

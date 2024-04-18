@@ -7,8 +7,8 @@ import (
 )
 
 const (
-	providersCount = 2 ^ 100
-	dataLength     = 2 ^ 10000
+	providersCount = 2 ^ 10
+	dataLength     = 2 ^ 100
 )
 
 type LargeStruct struct {
@@ -35,6 +35,7 @@ func addRandomDataToLargeStruct(s *LargeStruct) {
 ////
 
 func BenchmarkStructByValue(b *testing.B) {
+	// debug.SetGCPercent(-1)
 	initDataLength()
 	for i := 0; i < b.N; i++ {
 		var newProviders []LargeStruct
@@ -45,9 +46,11 @@ func BenchmarkStructByValue(b *testing.B) {
 		}
 		_ = newProviders
 	}
+	// runtime.GC()
 }
 
 func BenchmarkStructForByReference(b *testing.B) {
+	// debug.SetGCPercent(-1)
 	initDataLength()
 	for i := 0; i < b.N; i++ {
 		var newProviders []LargeStruct
@@ -59,9 +62,11 @@ func BenchmarkStructForByReference(b *testing.B) {
 		}
 		_ = newProviders
 	}
+	// runtime.GC()
 }
 
 func BenchmarkStructForByPointer(b *testing.B) {
+	// debug.SetGCPercent(-1)
 	initDataLength()
 	for i := 0; i < b.N; i++ {
 		var newProviders []LargeStruct
@@ -73,4 +78,5 @@ func BenchmarkStructForByPointer(b *testing.B) {
 		}
 		_ = newProviders
 	}
+	// runtime.GC()
 }

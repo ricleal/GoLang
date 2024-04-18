@@ -132,7 +132,7 @@ linters:
     - usestdlibvars
     - wastedassign
     - whitespace
-    - wrapcheck
+    # - wrapcheck
 
 issues:
   exclude-rules:

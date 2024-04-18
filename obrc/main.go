@@ -2,11 +2,9 @@ package main
 
 import (
 	"bufio"
-	"encoding/binary"
 	"flag"
 	"fmt"
 	"log/slog"
-	"math"
 	"os"
 	"runtime"
 	"runtime/pprof"
@@ -41,14 +39,39 @@ type StationData struct {
 
 var stations = map[string]StationData{}
 
-func float32frombytes(bytes []byte) float32 {
-	i := binary.LittleEndian.Uint16(bytes)
-	float := math.Float32frombits(uint32(i))
-	return float
+func convertStringToFloat32(bs []byte) float32 {
+	// We assume that the number always has a decimal point
+
+	isNegative := false
+	if bs[0] == '-' {
+		isNegative = true
+		bs = bs[1:]
+	}
+
+	var f float32
+	var multiplier float32 = 10.0
+	for i := 0; i < len(bs); i++ {
+		digit := bs[i]
+		if digit == '.' {
+			continue
+		}
+		digit -= '0'
+
+		f *= multiplier
+		f += float32(digit)
+	}
+
+	f /= 10
+
+	if isNegative {
+		f *= -1
+	}
+	return f
 }
 
 func run() {
-	file, err := os.Open("obrc/data/measurements.txt")
+	// file, err := os.Open("obrc/data/measurements.txt")
+	file, err := os.Open("/media/leal/New Volume/1brc/1000000/measurements.txt")
 	if err != nil {
 		panic(err)
 	}
@@ -67,7 +90,7 @@ func run() {
 			}
 			station := string(b[:i])
 			data := stations[station]
-			value := float32frombytes(b[i+1:])
+			value := convertStringToFloat32(b[i+1:])
 			if data.Count == 0 {
 				data.Min = value
 				data.Max = value

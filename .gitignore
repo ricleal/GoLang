@@ -13,3 +13,9 @@
 
 # profiling data
 *.prof
+
+# ide files
+/.vscode
+
+# .env files
+.env*

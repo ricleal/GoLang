@@ -3,7 +3,6 @@ package main
 import (
 	"encoding/binary"
 	"fmt"
-	"math"
 	"unsafe"
 )
 
@@ -39,6 +38,39 @@ func checkEndianess() binary.ByteOrder {
 	}
 }
 
+func convertStringToFloat32(s string) float32 {
+	// We assume that the number always has a decimal point
+
+	// conert string to bytes
+	bs := []byte(s)
+
+	isNegative := false
+	if bs[0] == '-' {
+		isNegative = true
+		bs = bs[1:]
+	}
+
+	var f float32
+	var multiplier float32 = 10.0
+	for i := 0; i < len(bs); i++ {
+		digit := bs[i]
+		if digit == '.' {
+			continue
+		}
+		digit -= '0'
+
+		f *= multiplier
+		f += float32(digit)
+	}
+
+	f /= 10
+
+	if isNegative {
+		f *= -1
+	}
+	return f
+}
+
 func main() {
 	// check the endianness of the system
 	endianess := checkEndianess()
@@ -47,47 +79,7 @@ func main() {
 	numbers := []string{"-89.9", "-45.5", "-12.2", "-3.0", "0.0", "3.0", "12.2", "45.5", "89.9"}
 
 	for _, number := range numbers {
-		// We assume that the number always has a decimal point
-
-		// conert string to bytes
-		bs := []byte(number)
-
-		isNegative := false
-		if bs[0] == '-' {
-			isNegative = true
-			bs = bs[1:]
-		}
-
-		// get the index of the decimal point
-		decimalIndex := -1
-		for i, b := range bs {
-			if b == '.' {
-				decimalIndex = i
-				break
-			}
-		}
-
-		// get the integer part
-		integerPart := bs[:decimalIndex]
-		if len(integerPart) == 1 {
-			integerPart = append([]byte{'0'}, integerPart...)
-		}
-		integerPart = append([]byte{'0', '0'}, integerPart...)
-		// get the fractional part
-		fractionalPart := append([]byte{'0', '0', '0'}, bs[decimalIndex+1:]...)
-
-		// convert the integer part to uint32
-		integer := binary.LittleEndian.Uint32(integerPart)
-		// convert the fractional part to uint32
-		fractional := binary.LittleEndian.Uint32(fractionalPart)
-
-		// build the float32 number
-		// f := float32(integer) + float32(fractional)/10
-		f := math.Float32frombits(integer) + math.Float32frombits(fractional)/10
-		if isNegative {
-			f = -f
-		}
-
+		f := convertStringToFloat32(number)
 		fmt.Println("Number: ", number, "=>", f)
 	}
 }
