@@ -1,8 +1,8 @@
 package main
 
-// Find the people who failed to badge in and out correctly
-
 import "fmt"
+
+// Find the people who failed to badge in and out correctly
 
 var badgeRecords = [][]string{
 	{"Martha", "exit"},
@@ -20,68 +20,63 @@ var badgeRecords = [][]string{
 	{"Martha", "exit"},
 	{"Jennifer", "exit"},
 	{"Paul", "exit"},
+	{"Ricardo", "exit"},
+	{"Ricardo", "exit"},
 	{"Ricardo", "enter"},
 }
 
-func failures(lst [][]string) (violEnter, violExit []string) {
-	registry := make(map[string][]string)
-	for _, l := range lst {
-		registry[l[0]] = append(registry[l[0]], l[1])
-	}
-	fmt.Println(registry)
+type BadgingOperation string
 
-	for name, reg := range registry {
-		for i, el := range reg {
-			switch {
-			case i == 0 && el == "exit":
-				violEnter = append(violEnter, name)
-			case i > 0 && reg[i-1] == "exit" && reg[i] == "exit":
-				violEnter = append(violEnter, name)
-			case i > 0 && reg[i-1] == "enter" && reg[i] == "enter":
-				violExit = append(violExit, name)
-			case len(reg)-1 == i && el == "enter":
-				violExit = append(violExit, name)
-			}
-		}
-	}
-	return
-}
+const (
+	Enter BadgingOperation = "enter"
+	Exit  BadgingOperation = "exit"
+)
 
-func failures2(lst [][]string) (violEnter, violExit []string) {
-	registry := make(map[string]string)
-	for _, l := range lst {
-		if _, ok := registry[l[0]]; !ok {
-			if l[1] == "exit" {
-				violEnter = append(violEnter, l[0])
-				continue
-			}
-			registry[l[0]] = l[1]
-			continue
-		}
-		if registry[l[0]] == l[1] {
-			if l[1] == "enter" && registry[l[0]] == "enter" {
-				violExit = append(violExit, l[0])
-			} else {
-				violEnter = append(violEnter, l[0])
-			}
-		}
-		registry[l[0]] = l[1]
-	}
-	// Check for people who failed to badge out
-	for name, reg := range registry {
-		if reg == "enter" {
-			violExit = append(violExit, name)
-		}
-	}
-	return
-}
+var (
+	ViolatorsExit  = make(map[string]struct{})
+	ViolatorsEnter = make(map[string]struct{})
+)
 
 func main() {
-	violEnter, violExit := failures(badgeRecords)
-	fmt.Println("Enter Violators:", violEnter)
-	fmt.Println("Exit Violators: ", violExit)
+	lastOperations := make(map[string]BadgingOperation)
 
-	violEnter, violExit = failures2(badgeRecords)
-	fmt.Println("Enter Violators:", violEnter)
-	fmt.Println("Exit Violators: ", violExit)
+	for _, record := range badgeRecords {
+		name := record[0]
+		operation := BadgingOperation(record[1])
+
+		// Check if this person has badged already
+		if v, ok := lastOperations[name]; ok && v == operation {
+			// same operation => violation
+			if operation == Enter {
+				ViolatorsExit[name] = struct{}{}
+			} else {
+				ViolatorsEnter[name] = struct{}{}
+			}
+		} else if !ok && operation == Exit {
+			// First time badge
+			ViolatorsEnter[name] = struct{}{}
+		}
+		lastOperations[name] = operation
+	}
+
+	// if the last operation is Enter, this person did not badge out
+	for name, operation := range lastOperations {
+		if operation == Enter {
+			ViolatorsExit[name] = struct{}{}
+		}
+	}
+
+	// Print results
+	fmt.Printf("Violators who did not badge in:\n\t")
+	for name := range ViolatorsEnter {
+		fmt.Print(name)
+		fmt.Print(" ")
+	}
+	fmt.Println()
+
+	fmt.Printf("Violators who did not badge out:\n\t")
+	for name := range ViolatorsExit {
+		fmt.Print(name)
+		fmt.Print(" ")
+	}
 }

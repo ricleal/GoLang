@@ -3,17 +3,21 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
-	"log"
 	"log/slog"
 	"net"
 	"net/http"
 	"os"
-	"sync"
+	"os/signal"
+	"strings"
+	"syscall"
 	"time"
 
 	"exp/http_server/store"
+
+	"github.com/lmittmann/tint"
 )
 
 // Inspired by
@@ -37,6 +41,31 @@ type Validator interface {
 	// problems. If len(problems) == 0 then
 	// the object is valid.
 	Valid(ctx context.Context) (problems map[string]string)
+}
+
+func Logger(w io.Writer, levelAsString string) *slog.Logger {
+	var level slog.Level
+
+	switch strings.ToLower(levelAsString) {
+	case "debug":
+		level = slog.LevelDebug
+	case "info":
+		level = slog.LevelInfo
+	case "warn":
+		level = slog.LevelWarn
+	case "Error":
+		level = slog.LevelError
+	default:
+		level = slog.LevelInfo
+	}
+
+	logger := slog.New(
+		tint.NewHandler(w, &tint.Options{
+			Level:      level,
+			TimeFormat: time.TimeOnly,
+		}),
+	)
+	return logger
 }
 
 type server struct {
@@ -83,14 +112,17 @@ func addRoutes(
 	config *Config,
 	st store.Store,
 ) {
-	mux.Handle("/api/v1", handleSomething(logger, st))
-	mux.HandleFunc("/healthz", handleHealthz(logger))
-	mux.Handle("/", http.NotFoundHandler())
+	// unused args
+	_ = config
+	mux.Handle("GET /api/v1", handleSomething(logger, st))
+	mux.HandleFunc("GET /healthz", handleHealthz(logger))
+	mux.Handle("GET /", http.NotFoundHandler())
 }
 
-func handleHealthz(logger *slog.Logger) http.HandlerFunc {
+func handleHealthz(log *slog.Logger) http.HandlerFunc {
 	return http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) {
+			log.Debug("server is healthy")
 			w.WriteHeader(http.StatusOK)
 			w.Write([]byte("ok"))
 		},
@@ -111,6 +143,7 @@ func (s *something) Valid(ctx context.Context) map[string]string {
 
 func handleSomething(logger *slog.Logger, st store.Store) http.Handler {
 	// do something with store
+	logger.Debug("handleSomething", slog.Any("store", st))
 	return http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) {
 			// use thing to handle request
@@ -171,38 +204,69 @@ func decodeValid[T Validator](r *http.Request) (T, map[string]string, error) {
 func run(
 	ctx context.Context,
 	args []string,
-	getenv func(string) string,
+	getEnvFunc func(string) string,
 	stdin io.Reader,
 	stdout, stderr io.Writer,
 ) error {
-	logger := slog.New(slog.NewTextHandler(stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	// unused args
+	_ = args
+	_ = stdin
+	_ = stdout
+
+	log := Logger(stderr, getEnvFunc("LOG_LEVEL"))
 	st := store.NewMemStore()
 	srv := NewServer(
-		logger,
+		log,
 		config,
 		st,
 	)
+
 	httpServer := &http.Server{
 		Addr:              net.JoinHostPort(config.Host, config.Port),
 		Handler:           srv,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
+
+	ctx, stop := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	log.Info("starting server", slog.String("addr", httpServer.Addr))
 	go func() {
-		log.Printf("listening on %s\n", httpServer.Addr)
-		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			fmt.Fprintf(os.Stderr, "error listening and serving: %s\n", err)
+		if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Error("listen and serve", tint.Err(err))
 		}
 	}()
-	var wg sync.WaitGroup
-	wg.Add(1)
+
+	<-ctx.Done()
+	stop()
+
+	log.Info("shutting down gracefully, press Ctrl+C again to force")
+
+	// Perform application shutdown with a maximum timeout of 5 seconds.
+	timeoutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	shutdownCh := make(chan struct{})
 	go func() {
-		defer wg.Done()
-		<-ctx.Done()
 		if err := httpServer.Shutdown(ctx); err != nil {
-			fmt.Fprintf(os.Stderr, "error shutting down http server: %s\n", err)
+			log.Error("shutdown", tint.Err(err))
+			os.Exit(2)
 		}
+		shutdownCh <- struct{}{}
 	}()
-	wg.Wait()
+
+	select {
+	case <-timeoutCtx.Done():
+		// canceled or timed out
+		if timeoutCtx.Err() == context.DeadlineExceeded {
+			log.Info("graceful shutdown timed out", tint.Err(timeoutCtx.Err()))
+			return timeoutCtx.Err()
+		}
+		log.Info("graceful shutdown canceled")
+	case <-shutdownCh:
+		log.Info("gracefully shutdown")
+	}
+
 	return nil
 }
 
