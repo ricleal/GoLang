@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"sort"
 	"sync"
+
+	"exp/fun/q1/fibs"
 )
 
 type Number interface {
@@ -38,58 +40,6 @@ func sortMap(v map[int]string) {
 	for i = 0; i < len(keys); i++ {
 		fmt.Println("->", keys[i], ":", v[keys[i]])
 	}
-}
-
-// fibonacci
-// n  =	0	1	2	3	4	5	6	7	  8	  9	  10	11	12	13	14	...
-// xn =	0	1	1	2	3	5	8	13	21	34	55	89	144	233	377	...
-// xn = xn−1 + xn−2
-// fibonacci recursive
-func fib(n int) int {
-	if n == 0 {
-		return 0
-	} else if n == 1 {
-		return 1
-	}
-	return fib(n-1) + fib(n-2)
-}
-
-// fibonacci iteractive
-func fib2(n int) int {
-	if n == 0 {
-		return 0
-	} else if n == 1 {
-		return 1
-	}
-
-	results := make([]int, n+1)
-	results[0] = 0
-	results[1] = 1
-
-	for i := 2; i <= n; i++ {
-		results[i] = results[i-1] + results[i-2]
-	}
-	return results[n]
-}
-
-// fibonacci iteractive
-func fib3(n int) int {
-	if n == 0 {
-		return 0
-	} else if n == 1 {
-		return 1
-	}
-
-	a := 0
-	b := 1
-
-	var c int
-	for i := 2; i <= n; i++ {
-		c = b + a
-		a = b
-		b = c
-	}
-	return c
 }
 
 //
@@ -162,9 +112,8 @@ func main() {
 	fmt.Println("set:", set.Dump())
 	// fib
 	for i := 0; i < 11; i++ {
-		fmt.Printf("fib (%d)= %d\n", i, fib(i))
-		fmt.Printf("fib2(%d)= %d\n", i, fib2(i))
-		fmt.Printf("fib3(%d)= %d\n", i, fib3(i))
+		fmt.Printf("fib (%d)= %d\n", i, fibs.Fib(i))
+		fmt.Printf("fib2(%d)= %d\n", i, fibs.Fib2(i))
+		fmt.Printf("fib3(%d)= %d\n", i, fibs.Fib3(i))
 	}
-
 }
