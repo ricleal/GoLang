@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"math/rand"
 	"os"
 	"sync"
 	"time"
@@ -17,8 +18,11 @@ const N = 100000
 var postgresURL = os.Getenv("POSTGRES_URL")
 
 var (
-	faker     *gofakeit.Faker
-	fakerOnce sync.Once
+	faker                 *gofakeit.Faker
+	fakerOnce             sync.Once
+	possibleOrganizations = []uuid.UUID{
+		uuid.New(), uuid.New(), uuid.New(), uuid.New(), uuid.New(),
+	}
 )
 
 func pgTest(ctx context.Context) {
@@ -59,24 +63,14 @@ func initFakeIt() *gofakeit.Faker {
 	return faker
 }
 
-/*
-id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-
-	id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-	username VARCHAR(255) NOT NULL,
-	email VARCHAR(255) NOT NULL,
-	name VARCHAR(255) NOT NULL,
-	bio TEXT,
-	data jsonb
-*/
 func generateFakeData() []interface{} {
 	faker := initFakeIt()
 	return []interface{}{
 		uuid.New(),
-		faker.Username(),
+		possibleOrganizations[rand.Intn(len(possibleOrganizations))], //nolint:G404
+		faker.FirstName(),
+		faker.LastName(),
 		faker.Email(),
-		faker.Name(),
-		faker.Sentence(50),
 		map[string]interface{}{
 			"user": map[string]interface{}{
 				"username":   faker.Username(),
@@ -114,7 +108,7 @@ func pgPopulate(ctx context.Context) {
 	_, err = db.CopyFrom(
 		ctx,
 		pgx.Identifier{"users"},
-		[]string{"id", "username", "email", "name", "bio", "data"},
+		[]string{"id", "organization_id", "firstname", "lastname", "email", "data"},
 		pgx.CopyFromRows(fakeData),
 	)
 	if err != nil {
