@@ -27,7 +27,7 @@ func expMap() {
 			// cast value to data
 			if valueData, ok := value.(data); ok {
 				if valueData.key == keyStr {
-					fmt.Printf("key: %s, value: %s\n", keyStr, valueData.value)
+					fmt.Printf("✅ key: %s, value: %s\n", keyStr, valueData.value)
 				} else {
 					fmt.Println("❗key and value not match")
 				}
