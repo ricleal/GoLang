@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"os"
 	"strings"
 )
 
@@ -48,16 +47,20 @@ func findBreach(domain string) map[string][]string {
 }
 
 func main() {
-	if len(os.Args) != 2 {
-		fmt.Println("Usage: main <domain>")
-		return
-	}
+	// if len(os.Args) != 2 {
+	// 	fmt.Println("Usage: main <domain>")
+	// 	return
+	// }
+
+	// domain := os.Args[1]
+
 	loadData()
 
-	domain := os.Args[1]
-
-	m := findBreach(domain)
-	for k, v := range m {
-		fmt.Printf("%s: %v\n", k, v)
+	for _, domain := range []string{"example1.com", "example2.com", "example3.com"} {
+		fmt.Printf("** Breaches for domain: %s**\n", domain)
+		m := findBreach(domain)
+		for k, v := range m {
+			fmt.Printf("%s: %v\n", k, v)
+		}
 	}
 }

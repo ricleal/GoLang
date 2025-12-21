@@ -4,10 +4,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path"
 	"strconv"
 
 	"github.com/spf13/cobra"
 )
+
+// filename: name of the file to store tasks
+var filename = path.Join(os.TempDir(), "tasks.json")
 
 // if file does not exist, create it
 // and dump inside an empty array
@@ -27,9 +31,6 @@ func init() {
 		}
 	}
 }
-
-// filename: name of the file to store tasks
-const filename = "tasks.json"
 
 // Task: struct for a task
 type Task struct {
@@ -69,7 +70,7 @@ func (ts *Tasks) read() (Tasks, error) {
 func (ts *Tasks) write() error {
 	// write to file
 	// Open the JSON file
-	file, err := os.OpenFile(filename, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0755)
+	file, err := os.OpenFile(filename, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0o755)
 	if err != nil {
 		return fmt.Errorf("could not open %q: %v", filename, err)
 	}
@@ -207,9 +208,9 @@ func (ts *Tasks) Undone(taskID int) error {
 }
 
 func main() {
-	var tasks = NewTasks()
-	var rootCmd = &cobra.Command{Use: "todolist"}
-	var cmdAdd = &cobra.Command{
+	tasks := NewTasks()
+	rootCmd := &cobra.Command{Use: "todolist"}
+	cmdAdd := &cobra.Command{
 		Use:   "add [Task name]",
 		Short: "Add task to the list",
 		Args:  cobra.MinimumNArgs(1),
@@ -225,7 +226,7 @@ func main() {
 	// Implement other commands here
 
 	// Cleanup command
-	var cmdCleanup = &cobra.Command{
+	cmdCleanup := &cobra.Command{
 		Use:   "cleanup",
 		Short: "Remove done tasks from the list",
 		Run: func(cmd *cobra.Command, args []string) {
@@ -240,7 +241,7 @@ func main() {
 	rootCmd.AddCommand(cmdCleanup)
 
 	// List command
-	var cmdList = &cobra.Command{
+	cmdList := &cobra.Command{
 		Use:   "list",
 		Short: "List all tasks",
 		Run: func(cmd *cobra.Command, args []string) {
@@ -255,7 +256,7 @@ func main() {
 	rootCmd.AddCommand(cmdList)
 
 	// Done command
-	var cmdDone = &cobra.Command{
+	cmdDone := &cobra.Command{
 		Use:   "done [Task ID]",
 		Short: "Mark task as done",
 		Args:  cobra.MinimumNArgs(1),
@@ -274,7 +275,7 @@ func main() {
 	rootCmd.AddCommand(cmdDone)
 
 	// Undone command
-	var cmdUndone = &cobra.Command{
+	cmdUndone := &cobra.Command{
 		Use:   "undone [Task ID]",
 		Short: "Mark task as undone",
 		Args:  cobra.MinimumNArgs(1),

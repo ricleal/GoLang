@@ -67,7 +67,14 @@ func Sort(width, height, length, mass int) string {
 }
 
 func main() {
+	// Test the type of package
+	var t TypePackage
+	for i := range 3 {
+		t = TypePackage(i)
+		fmt.Printf("TypePackage(%d) = %s\n", i, t)
+	}
 	// random values for the dimensions and mass.
+	fmt.Println("----------------------------")
 	width, height, length, mass := rand.Intn(200), rand.Intn(200), rand.Intn(200), rand.Intn(40)
 	res := Sort(width, height, length, mass)
 	fmt.Printf("Sort(%d, %d, %d, %d) = %s\n", width, height, length, mass, res)
