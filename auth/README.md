@@ -5,49 +5,82 @@ This project demonstrates a microservices architecture with **decoupled authenti
 ## Architecture
 
 ```
-┌─────────────────┐
-│   API Gateway   │ :8000  (Entry point)
-└────────┬────────┘
-         │
-    ┌────┴─────────────────────────────┐
-    │                                  │
-┌───▼─────┐                       ┌───▼────┐
-│   App   │ :8081 (Replica 1)     │  Auth  │
-├─────────┤                       │ Server │
-│   App   │ :8081 (Replica 2)     │ :8080  │
-└─────────┘                       └────────┘
-    │                                  │
-    └──────────────┬───────────────────┘
-                   │
-             (Validates JWT)
-
-Docker DNS round-robin load balancing across app replicas
+┌─────────────────────────────────────────────────────────────────┐
+│                    Traefik Load Balancer :8000                   │
+│  • Rate Limiting: 10 req/sec avg, burst of 20 (DDoS protection) │
+│  • Round-robin load balancing across gateway replicas           │
+│  • Dashboard: http://localhost:8080/dashboard/                  │
+└────────────────────────────┬─────────────────────────────────────┘
+                             │
+               ┌─────────────┴─────────────┐
+               ▼                           ▼
+┌───────────────────────────┐   ┌───────────────────────────┐
+│  API Gateway (Replica 1)  │   │  API Gateway (Replica 2)  │
+│  • Validates JWT          │   │  • Validates JWT          │
+│  • Adds X-Username header │   │  • Adds X-Username header │
+│  • Adds X-Role header     │   │  • Adds X-Role header     │
+│  • Proxies to app         │   │  • Proxies to app         │
+└──────────────┬────────────┘   └──────────────┬────────────┘
+               │                               │
+               └─────────────┬─────────────────┘
+                             │
+               ┌─────────────┴─────────────┐
+               ▼                           ▼
+┌───────────────────────────┐   ┌───────────────────────────┐
+│     App (Replica 1)       │   │     App (Replica 2)       │
+│  • Business logic         │   │  • Business logic         │
+│  • Authorization (RBAC)   │   │  • Authorization (RBAC)   │
+│  • Trusts gateway headers │   │  • Trusts gateway headers │
+└──────────────┬────────────┘   └──────────────┬────────────┘
+               │                               │
+               └─────────────┬─────────────────┘
+                             │
+                             ▼
+                    ┌────────────────┐
+                    │  Auth Server   │
+                    │  :8888         │
+                    │  • Issues JWT  │
+                    │  • Validates   │
+                    │  • User roles  │
+                    └────────────────┘
 ```
 
 ### Components
 
-1. **Auth Server** (`:8080`)
+1. **Traefik Load Balancer** (`:8000`)
+   - Entry point for all client traffic
+   - Rate limiting: 10 req/sec average, burst of 20 (DDoS protection)
+   - Round-robin load balancing to gateway replicas
+   - Dashboard at http://localhost:8080/dashboard/
+
+2. **Auth Server** (`:8888`)
    - Issues JWT tokens upon successful login
-   - Validates JWT tokens for other services
+   - Validates JWT tokens for the gateway
+   - Manages user credentials and roles
    - Decoupled from business logic
 
-2. **API Gateway** (`:8000`)
-   - Entry point for all client requests
-   - Validates JWT with auth server before routing
-   - Proxies to app service (Docker DNS handles load balancing)
+3. **API Gateway** (2 replicas)
+   - Authentication boundary - validates JWT once per request
+   - Calls auth server to validate tokens
+   - Adds `X-Username` and `X-Role` headers to proxied requests
+   - Forwards requests to app services (no JWT forwarded)
 
-3. **App Service** (`:8081` - 2 replicas)
+4. **App Service** (2 replicas)
    - Business logic services (cowsay implementation)
-   - Scaled with Docker Compose replicas (horizontally scalable)
-   - Each validates JWT with auth server
-   - Completely decoupled from authentication logic
-   - Docker DNS provides automatic round-robin load balancing
+   - Authorization with role-based access control (RBAC)
+   - Trusts `X-Username` and `X-Role` headers from gateway
+   - No direct JWT validation (trusts the gateway)
+   - Horizontally scalable with Docker Compose replicas
 
 ## Key Features
 
-✅ **Decoupled Auth**: Authentication logic is completely separated from business services  
+✅ **Rate Limiting**: Traefik blocks DDoS attacks with 10 req/sec average, burst of 20  
+✅ **Load Balancing**: Round-robin across 2 gateway + 2 app replicas  
+✅ **Decoupled Auth**: Authentication at gateway, authorization at app layer  
 ✅ **JWT-based**: Stateless authentication using JWT tokens  
 ✅ **Role-Based Access Control (RBAC)**: Users have roles (user, admin) with different permissions  
+✅ **High Availability**: Multiple replicas ensure no single point of failure  
+✅ **Monitoring**: Traefik dashboard shows service health and routing  
 ✅ **Horizontal Scaling**: App service uses Docker Compose replicas for easy scaling  
 ✅ **Load Balancing**: Round-robin distribution across multiple app instances  
 ✅ **Health Checks**: All services expose health endpoints  

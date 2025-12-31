@@ -1,6 +1,24 @@
 version: '3.8'
 
 services:
+  # Traefik - Load Balancer with Rate Limiting
+  traefik:
+    image: traefik:v2.10
+    container_name: traefik
+    command:
+      - "--api.insecure=true"
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--entrypoints.web.address=:80"
+      - "--log.level=INFO"
+    ports:
+      - "8000:80"      # Main entry point
+      - "8080:8080"    # Traefik dashboard
+    volumes:
+      - "/var/run/docker.sock:/var/run/docker.sock:ro"
+    networks:
+      - auth-network
+
   # Auth Server - Handles JWT issuing and validation
   auth-server:
     build:
@@ -8,7 +26,7 @@ services:
       dockerfile: Dockerfile
     container_name: auth-server
     ports:
-      - "8080:8080"
+      - "8888:8080"  # Exposed for direct access if needed
     environment:
       - PORT=8080
     networks:
@@ -28,7 +46,6 @@ services:
     environment:
       - APP_NAME=app
       - PORT=8081
-      - AUTH_SERVER_URL=http://auth-server:8080
     networks:
       - auth-network
     depends_on:
@@ -43,14 +60,11 @@ services:
       retries: 3
       start_period: 10s
 
-  # API Gateway - Entry point with load balancing
+  # API Gateway - Entry point with authentication (2 replicas)
   api-gateway:
     build:
       context: ./api-gateway
       dockerfile: Dockerfile
-    container_name: api-gateway
-    ports:
-      - "8000:8000"
     environment:
       - PORT=8000
       - AUTH_SERVER_URL=http://auth-server:8080
@@ -62,6 +76,27 @@ services:
         condition: service_healthy
       app:
         condition: service_healthy
+    deploy:
+      replicas: 2
+    labels:
+      # Enable Traefik
+      - "traefik.enable=true"
+      
+      # HTTP Router
+      - "traefik.http.routers.api-gateway.rule=PathPrefix(`/`)"
+      - "traefik.http.routers.api-gateway.entrypoints=web"
+      - "traefik.http.routers.api-gateway.service=api-gateway"
+      
+      # Load Balancer
+      - "traefik.http.services.api-gateway.loadbalancer.server.port=8000"
+      
+      # Rate Limiting Middleware
+      - "traefik.http.middlewares.rate-limit.ratelimit.average=10"  # 10 req/sec average
+      - "traefik.http.middlewares.rate-limit.ratelimit.burst=20"     # Allow burst of 20
+      - "traefik.http.middlewares.rate-limit.ratelimit.period=1s"    # Per second
+      
+      # Apply Rate Limiting
+      - "traefik.http.routers.api-gateway.middlewares=rate-limit"
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8000/health"]
       interval: 10s
