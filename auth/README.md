@@ -7,56 +7,48 @@ This project demonstrates a microservices architecture with **decoupled authenti
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                    Traefik Load Balancer :8000                   │
+│  • SINGLE ENTRY POINT - All traffic goes through here           │
 │  • Rate Limiting: 10 req/sec avg, burst of 20 (DDoS protection) │
-│  • Round-robin load balancing across gateway replicas           │
+│  • Routes: /login, /validate-header → auth-server               │
+│  •         /api/* → api-gateway                                  │
 │  • Dashboard: http://localhost:8080/dashboard/                  │
 └────────────────────────────┬─────────────────────────────────────┘
                              │
-               ┌─────────────┴─────────────┐
-               ▼                           ▼
-┌───────────────────────────┐   ┌───────────────────────────┐
-│  API Gateway (Replica 1)  │   │  API Gateway (Replica 2)  │
-│  • Validates JWT          │   │  • Validates JWT          │
-│  • Adds X-Username header │   │  • Adds X-Username header │
-│  • Adds X-Role header     │   │  • Adds X-Role header     │
-│  • Proxies to app         │   │  • Proxies to app         │
-└──────────────┬────────────┘   └──────────────┬────────────┘
-               │                               │
-               └─────────────┬─────────────────┘
-                             │
-               ┌─────────────┴─────────────┐
-               ▼                           ▼
-┌───────────────────────────┐   ┌───────────────────────────┐
-│     App (Replica 1)       │   │     App (Replica 2)       │
-│  • Business logic         │   │  • Business logic         │
-│  • Authorization (RBAC)   │   │  • Authorization (RBAC)   │
-│  • Trusts gateway headers │   │  • Trusts gateway headers │
-└──────────────┬────────────┘   └──────────────┬────────────┘
-               │                               │
-               └─────────────┬─────────────────┘
-                             │
-                             ▼
-                    ┌────────────────┐
-                    │  Auth Server   │
-                    │  :8888         │
-                    │  • Issues JWT  │
-                    │  • Validates   │
-                    │  • User roles  │
-                    └────────────────┘
+          ┌──────────────────┼──────────────────┐
+          ▼                  ▼                  ▼
+┌────────────────┐ ┌───────────────────────────┐
+│  Auth Server   │ │  API Gateway (2 replicas) │
+│  • Issues JWT  │ │  • Validates JWT          │
+│  • Validates   │ │  • Adds X-Username header │
+│  • User roles  │ │  • Adds X-Role header     │
+│  (Internal)    │ │  • Proxies to app         │
+└────────────────┘ └──────────────┬────────────┘
+                                  │
+                    ┌─────────────┴─────────────┐
+                    ▼                           ▼
+          ┌───────────────────────┐   ┌───────────────────────┐
+          │     App (Replica 1)   │   │     App (Replica 2)   │
+          │  • Business logic     │   │  • Business logic     │
+          │  • Authorization      │   │  • Authorization      │
+          │  • Trusts gateway     │   │  • Trusts gateway     │
+          └───────────────────────┘   └───────────────────────┘
 ```
 
 ### Components
 
-1. **Traefik Load Balancer** (`:8000`)
-   - Entry point for all client traffic
+1. **Traefik Load Balancer** (`:8000` - ONLY exposed port)
+   - **Single entry point** for ALL client traffic including authentication
+   - Routes `/login` and `/validate-header` to auth-server
+   - Routes `/api/*` to api-gateway replicas
    - Rate limiting: 10 req/sec average, burst of 20 (DDoS protection)
-   - Round-robin load balancing to gateway replicas
+   - Round-robin load balancing
    - Dashboard at http://localhost:8080/dashboard/
 
-2. **Auth Server** (`:8888`)
+2. **Auth Server** (internal only - not directly accessible)
    - Issues JWT tokens upon successful login
    - Validates JWT tokens for the gateway
    - Manages user credentials and roles
+   - Accessed through Traefik routing
    - Decoupled from business logic
 
 3. **API Gateway** (2 replicas)
