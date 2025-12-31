@@ -82,7 +82,7 @@ func NewBook(id int, title, author string) Book {
 //
 // This is a simple REST API to manage a library of books. It uses the Go standard library to create a simple HTTP server that listens on port 8080. The API supports the following operations:
 //
-// - GET /books: Get all books in the library
+// - GET /books: Get all books in the library (supports pagination via ?page=1&limit=10)
 // - GET /books/{id}: Get a book by ID
 // - POST /books: Add a new book to the library
 // - PUT /books/{id}: Update a book by ID
@@ -94,9 +94,61 @@ type BooksAPI struct {
 	router  *mux.Router
 }
 
+type PaginatedResponse struct {
+	Books      []Book `json:"books"`
+	Page       int    `json:"page"`
+	Limit      int    `json:"limit"`
+	Total      int    `json:"total"`
+	TotalPages int    `json:"total_pages"`
+}
+
 func (api *BooksAPI) GetBooks(w http.ResponseWriter, r *http.Request) {
-	books := api.Library.GetBooks()
-	respondWithJSON(w, http.StatusOK, books)
+	// Parse pagination parameters
+	pageStr := r.URL.Query().Get("page")
+	limitStr := r.URL.Query().Get("limit")
+
+	page := 1
+	limit := 10 // default page size
+
+	if pageStr != "" {
+		if p := parseInt(pageStr); p > 0 {
+			page = p
+		}
+	}
+
+	if limitStr != "" {
+		if l := parseInt(limitStr); l > 0 {
+			limit = l
+		}
+	}
+
+	allBooks := api.Library.GetBooks()
+	total := len(allBooks)
+
+	// Calculate pagination
+	start := (page - 1) * limit
+	end := start + limit
+
+	// Handle out of bounds
+	if start > total {
+		start = total
+	}
+	if end > total {
+		end = total
+	}
+
+	paginatedBooks := allBooks[start:end]
+	totalPages := (total + limit - 1) / limit // ceiling division
+
+	response := PaginatedResponse{
+		Books:      paginatedBooks,
+		Page:       page,
+		Limit:      limit,
+		Total:      total,
+		TotalPages: totalPages,
+	}
+
+	respondWithJSON(w, http.StatusOK, response)
 }
 
 func (api *BooksAPI) GetBook(w http.ResponseWriter, r *http.Request) {
