@@ -1,9 +1,7 @@
-version: '3.8'
-
 services:
   # Traefik - Load Balancer with Rate Limiting
   traefik:
-    image: traefik:v2.10
+    image: traefik:v3.6.6
     container_name: traefik
     command:
       - "--api.insecure=true"
