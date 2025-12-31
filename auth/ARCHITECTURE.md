@@ -8,16 +8,27 @@
 └───┬────┘
     │ JWT Token
     ▼
-┌─────────────┐
-│ API Gateway │ ◄─── AUTHENTICATION (Who you are?)
-└──────┬──────┘
+┌──────────────────┐
+│ Traefik (:8000)  │ ◄─── RATE LIMITING (DDoS protection)
+│  Load Balancer   │      10 req/sec avg, burst 20
+└────────┬─────────┘
+         │
+    ┌────┴────┐ (Round-robin)
+    ▼         ▼
+┌─────────────┐ ┌─────────────┐
+│ API Gateway │ │ API Gateway │ ◄─── AUTHENTICATION (Who you are?)
+│ (Replica 1) │ │ (Replica 2) │
+└──────┬──────┘ └──────┬──────┘
        │ X-Username + X-Role headers
        │ (No JWT token forwarded)
-       ▼
-┌──────────────┐
-│  App Service │ ◄─── AUTHORIZATION (What can you do?)
-│  (Replicas)  │
-└──────────────┘
+       └────────┬────────┘
+                │
+       ┌────────┴────────┐ (Docker DNS)
+       ▼                 ▼
+┌──────────────┐  ┌──────────────┐
+│  App Service │  │  App Service │ ◄─── AUTHORIZATION (What can you do?)
+│ (Replica 1)  │  │ (Replica 2)  │
+└──────────────┘  └──────────────┘
 ```
 
 ## Separation of Concerns
@@ -49,54 +60,65 @@
 ### User Request to Protected Endpoint
 
 ```
-1. Client → Gateway
+1. Client → Traefik
+   POST /api/v1/cowsay
+   Authorization: Bearer <jwt-token>
+   
+2. Traefik checks rate limit
+   ✓ Within limit → forward to gateway
+   ✗ Exceeded → HTTP 429 Too Many Requests
+
+3. Traefik → Gateway (load balanced)
    POST /api/v1/cowsay
    Authorization: Bearer <jwt-token>
 
-2. Gateway → Auth Server
+4. Gateway → Auth Server
    GET /validate-header
    Authorization: Bearer <jwt-token>
    
-3. Auth Server → Gateway
+5. Auth Server → Gateway
    {
      "valid": true,
      "username": "alice",
      "role": "user"
    }
 
-4. Gateway → App
+6. Gateway → App (Docker DNS load balanced)
    POST /api/v1/cowsay
    X-Username: alice
    X-Role: user
    (No Authorization header!)
 
-5. App → Client
+7. App → Gateway → Traefik → Client
    {
      "cow": "...",
      "user": "alice",
-     "service": "app"
+     "service": "app",
+     "instance": "replica-1-id"
    }
 ```
 
 ### Admin Request to Protected Endpoint
 
 ```
-1. Client → Gateway
+1. Client → Traefik → Gateway
    GET /api/v1/admin
    Authorization: Bearer <admin-jwt-token>
 
-2. Gateway → Auth Server
+2. Traefik: Rate limit check ✓
+
+3. Gateway → Auth Server
    (Validates JWT - same as above)
 
-3. Gateway → App
+4. Gateway → App (load balanced)
    GET /api/v1/admin
    X-Username: admin
    X-Role: admin
 
-4. App checks: role == "admin"? 
+5. App checks: role == "admin"? 
    ✓ Yes → Allow
    
-5. App → Client
+6. App → Gateway → Traefik → Client
    {
      "message": "Welcome to admin panel",
      "role": "admin"
@@ -227,6 +249,8 @@ func verifyGatewaySource(next http.HandlerFunc) http.HandlerFunc {
 
 | Concern | Handled By | Validates JWT? | Checks Roles? |
 |---------|------------|----------------|---------------|
+| **Rate Limiting** (DDoS) | Traefik Load Balancer | No | No |
+| **Load Balancing** | Traefik + Docker DNS | No | No |
 | **Authentication** (Who?) | API Gateway | ✓ Yes | No |
 | **Authorization** (What?) | App Service | No (trusts gateway) | ✓ Yes |
 

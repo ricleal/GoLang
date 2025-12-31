@@ -43,17 +43,23 @@ New `/api/v1/admin` endpoint that:
     │
     │ Protected request with JWT
     ▼
-┌───────────┐
-│    API    │ 1. Validates JWT with Auth Server
-│  Gateway  │ 2. Receives username + role
-└─────┬─────┘ 3. Forwards to backend
-      │
-      ▼
-┌───────────┐
-│ App1/App2 │ 1. Validates JWT with Auth Server
-│           │ 2. Checks role requirement
-│           │ 3. Returns 403 if insufficient permissions
-└───────────┘
+┌──────────────┐
+│   Traefik    │ 1. Rate limiting check
+│Load Balancer │ 2. Load balances to gateway
+└──────┬───────┘
+       │
+       ▼
+┌─────────────┐
+│ API Gateway │ 1. Validates JWT with Auth Server
+│ (2 replicas)│ 2. Receives username + role
+└──────┬──────┘ 3. Adds X-Username/X-Role headers
+       │        4. Forwards to app (no JWT)
+       ▼
+┌─────────────┐
+│ App Service │ 1. Trusts gateway headers
+│ (2 replicas)│ 2. Checks role requirement
+│             │ 3. Returns 403 if insufficient permissions
+└─────────────┘
 ```
 
 ## Testing Results
@@ -79,12 +85,12 @@ New `/api/v1/admin` endpoint that:
    - Include role in JWT token creation
    - Return role in validation responses
 
-2. **app1/main.go & app2/main.go**
-   - Added `Role` field to `ValidateResponse` struct
-   - Updated `authMiddleware` to pass role to handlers
-   - Added `requireRole()` middleware
+2. **app/main.go** (consolidated from app1/app2)
+   - Uses gateway headers (X-Username, X-Role) instead of JWT validation
+   - Added `requireRole()` middleware for authorization
    - Added `adminHandler()` for admin endpoint
    - Registered `/api/v1/admin` route
+   - Trusts gateway authentication boundary
 
 3. **api-gateway/main.go**
    - Added `/api/v1/admin` route with authentication
