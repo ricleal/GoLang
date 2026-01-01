@@ -27,18 +27,6 @@ services:
       - PORT=8080
     networks:
       - auth-network
-    labels:
-      # Enable Traefik
-      - "traefik.enable=true"
-      
-      # HTTP Router for login and validation endpoints
-      - "traefik.http.routers.auth-server.rule=PathPrefix(`/login`) || PathPrefix(`/validate-header`)"
-      - "traefik.http.routers.auth-server.entrypoints=web"
-      - "traefik.http.routers.auth-server.service=auth-server"
-      - "traefik.http.routers.auth-server.priority=100"  # Higher priority than gateway catch-all
-      
-      # Load Balancer
-      - "traefik.http.services.auth-server.loadbalancer.server.port=8080"
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/health"]
       interval: 10s
@@ -90,21 +78,13 @@ services:
       # Enable Traefik
       - "traefik.enable=true"
       
-      # HTTP Router
+      # HTTP Router - single entry point for all traffic
       - "traefik.http.routers.api-gateway.rule=PathPrefix(`/`)"
       - "traefik.http.routers.api-gateway.entrypoints=web"
       - "traefik.http.routers.api-gateway.service=api-gateway"
       
       # Load Balancer
       - "traefik.http.services.api-gateway.loadbalancer.server.port=8000"
-      
-      # Rate Limiting Middleware
-      - "traefik.http.middlewares.rate-limit.ratelimit.average=10"  # 10 req/sec average
-      - "traefik.http.middlewares.rate-limit.ratelimit.burst=20"     # Allow burst of 20
-      - "traefik.http.middlewares.rate-limit.ratelimit.period=1s"    # Per second
-      
-      # Apply Rate Limiting
-      - "traefik.http.routers.api-gateway.middlewares=rate-limit"
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8000/health"]
       interval: 10s

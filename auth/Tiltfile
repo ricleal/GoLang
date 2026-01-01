@@ -1,0 +1,33 @@
+# Tiltfile for Auth microservices architecture
+# This replaces docker-compose.yml functionality without using docker_compose()
+
+# Ensure we're using docker-desktop context to avoid overwriting other contexts
+if k8s_context() != 'docker-desktop':
+  fail("failing early to avoid overwriting other contexts")
+
+# Deploy: tell Tilt what YAML to deploy
+k8s_yaml('k8s.yaml')
+
+# Build: tell Tilt what images to build from which directories
+# Using docker_build which automatically handles image loading for docker-desktop
+docker_build('auth-server-img', './auth-server')
+docker_build('app-img', './app')
+docker_build('api-gateway-img', './api-gateway')
+
+# Watch: configure port forwarding and resource dependencies
+k8s_resource(
+  'traefik',
+  port_forwards=['8000:80', '8080:8080'],
+  objects=[
+    'traefik:serviceaccount',
+    'traefik:clusterrole',
+    'traefik:clusterrolebinding'
+  ]
+)
+k8s_resource('auth-server', resource_deps=['traefik'])
+k8s_resource('app', resource_deps=['auth-server'])
+k8s_resource('api-gateway', resource_deps=['auth-server', 'app'])
+
+print("✅ Tiltfile loaded successfully!")
+print("📊 Traefik Dashboard: http://localhost:8080")
+print("🌐 Main entry point: http://localhost:8000")
