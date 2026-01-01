@@ -30,36 +30,29 @@ New `/api/v1/admin` endpoint that:
 
 ## Architecture Flow
 
-```
-┌────────┐
-│ Client │
-└───┬────┘
-    │ Login (username/password)
-    ▼
-┌───────────┐
-│   Auth    │ Creates JWT with username + role
-│  Server   │ Returns token
-└───────────┘
-    │
-    │ Protected request with JWT
-    ▼
-┌──────────────┐
-│   Traefik    │ 1. Rate limiting check
-│Load Balancer │ 2. Load balances to gateway
-└──────┬───────┘
-       │
-       ▼
-┌─────────────┐
-│ API Gateway │ 1. Validates JWT with Auth Server
-│ (2 replicas)│ 2. Receives username + role
-└──────┬──────┘ 3. Adds X-Username/X-Role headers
-       │        4. Forwards to app (no JWT)
-       ▼
-┌─────────────┐
-│ App Service │ 1. Trusts gateway headers
-│ (2 replicas)│ 2. Checks role requirement
-│             │ 3. Returns 403 if insufficient permissions
-└─────────────┘
+```mermaid
+sequenceDiagram
+    participant Client
+    participant Auth as Auth Server
+    participant Traefik
+    participant Gateway as API Gateway<br/>(2 replicas)
+    participant App as App Service<br/>(2 replicas)
+    
+    Client->>Auth: Login (username/password)
+    Note over Auth: Creates JWT with<br/>username + role
+    Auth-->>Client: Returns token
+    
+    Client->>Traefik: Protected request with JWT
+    Note over Traefik: 1. Rate limiting check<br/>2. Load balances to gateway
+    Traefik->>Gateway: Forward request
+    
+    Note over Gateway: 1. Validates JWT with Auth Server<br/>2. Receives username + role<br/>3. Adds X-Username/X-Role headers<br/>4. Forwards to app (no JWT)
+    Gateway->>App: Request with headers
+    
+    Note over App: 1. Trusts gateway headers<br/>2. Checks role requirement<br/>3. Returns 403 if insufficient
+    App-->>Gateway: Response
+    Gateway-->>Traefik: Response
+    Traefik-->>Client: Response
 ```
 
 ## Testing Results

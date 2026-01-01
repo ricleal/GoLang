@@ -2,33 +2,31 @@
 
 ## Architecture Overview
 
-```
-┌────────┐
-│ Client │ 
-└───┬────┘
-    │ JWT Token
-    ▼
-┌──────────────────┐
-│ Traefik (:8000)  │ ◄─── RATE LIMITING (DDoS protection)
-│  Load Balancer   │      10 req/sec avg, burst 20
-└────────┬─────────┘
-         │
-    ┌────┴────┐ (Round-robin)
-    ▼         ▼
-┌─────────────┐ ┌─────────────┐
-│ API Gateway │ │ API Gateway │ ◄─── AUTHENTICATION (Who you are?)
-│ (Replica 1) │ │ (Replica 2) │
-└──────┬──────┘ └──────┬──────┘
-       │ X-Username + X-Role headers
-       │ (No JWT token forwarded)
-       └────────┬────────┘
-                │
-       ┌────────┴────────┐ (Docker DNS)
-       ▼                 ▼
-┌──────────────┐  ┌──────────────┐
-│  App Service │  │  App Service │ ◄─── AUTHORIZATION (What can you do?)
-│ (Replica 1)  │  │ (Replica 2)  │
-└──────────────┘  └──────────────┘
+```mermaid
+graph TB
+    Client[Client]
+    
+    subgraph Traefik["Traefik :8000 - Load Balancer"]
+        TLB["RATE LIMITING<br/>DDoS protection<br/>10 req/sec avg, burst 20"]
+    end
+    
+    subgraph Gateway["AUTHENTICATION - Who you are?"]
+        GW1["API Gateway<br/>Replica 1"]
+        GW2["API Gateway<br/>Replica 2"]
+    end
+    
+    subgraph Apps["AUTHORIZATION - What can you do?"]
+        App1["App Service<br/>Replica 1"]
+        App2["App Service<br/>Replica 2"]
+    end
+    
+    Client -->|JWT Token| TLB
+    TLB -->|Round-robin| GW1
+    TLB -->|Round-robin| GW2
+    GW1 -->|X-Username + X-Role headers<br/>No JWT forwarded| App1
+    GW1 -->|Docker DNS| App2
+    GW2 -->|X-Username + X-Role headers| App1
+    GW2 -->|Docker DNS| App2
 ```
 
 ## Separation of Concerns
@@ -59,93 +57,70 @@
 
 ### User Request to Protected Endpoint
 
-```
-1. Client → Traefik
-   POST /api/v1/cowsay
-   Authorization: Bearer <jwt-token>
-   
-2. Traefik checks rate limit
-   ✓ Within limit → forward to gateway
-   ✗ Exceeded → HTTP 429 Too Many Requests
-
-3. Traefik → Gateway (load balanced)
-   POST /api/v1/cowsay
-   Authorization: Bearer <jwt-token>
-
-4. Gateway → Auth Server
-   GET /validate-header
-   Authorization: Bearer <jwt-token>
-   
-5. Auth Server → Gateway
-   {
-     "valid": true,
-     "username": "alice",
-     "role": "user"
-   }
-
-6. Gateway → App (Docker DNS load balanced)
-   POST /api/v1/cowsay
-   X-Username: alice
-   X-Role: user
-   (No Authorization header!)
-
-7. App → Gateway → Traefik → Client
-   {
-     "cow": "...",
-     "user": "alice",
-     "service": "app",
-     "instance": "replica-1-id"
-   }
+```mermaid
+sequenceDiagram
+    participant Client
+    participant Traefik
+    participant Gateway as API Gateway
+    participant Auth as Auth Server
+    participant App as App Service
+    
+    Client->>Traefik: POST /api/v1/cowsay<br/>Authorization: Bearer <jwt-token>
+    
+    alt Rate limit OK
+        Traefik->>Gateway: POST /api/v1/cowsay (load balanced)<br/>Authorization: Bearer <jwt-token>
+        Gateway->>Auth: GET /validate-header<br/>Authorization: Bearer <jwt-token>
+        Auth-->>Gateway: {"valid": true, "username": "alice", "role": "user"}
+        Gateway->>App: POST /api/v1/cowsay (Docker DNS)<br/>X-Username: alice<br/>X-Role: user<br/>(No JWT!)
+        App-->>Gateway: {"cow": "...", "user": "alice", "service": "app"}
+        Gateway-->>Traefik: Response
+        Traefik-->>Client: Response
+    else Rate limit exceeded
+        Traefik-->>Client: HTTP 429 Too Many Requests
+    end
 ```
 
 ### Admin Request to Protected Endpoint
 
-```
-1. Client → Traefik → Gateway
-   GET /api/v1/admin
-   Authorization: Bearer <admin-jwt-token>
-
-2. Traefik: Rate limit check ✓
-
-3. Gateway → Auth Server
-   (Validates JWT - same as above)
-
-4. Gateway → App (load balanced)
-   GET /api/v1/admin
-   X-Username: admin
-   X-Role: admin
-
-5. App checks: role == "admin"? 
-   ✓ Yes → Allow
-   
-6. App → Gateway → Traefik → Client
-   {
-     "message": "Welcome to admin panel",
-     "role": "admin"
-   }
+```mermaid
+sequenceDiagram
+    participant Client
+    participant Traefik
+    participant Gateway as API Gateway
+    participant Auth as Auth Server
+    participant App as App Service
+    
+    Client->>Traefik: GET /api/v1/admin<br/>Authorization: Bearer <admin-jwt>
+    Note over Traefik: Rate limit check ✓
+    Traefik->>Gateway: GET /api/v1/admin<br/>Authorization: Bearer <admin-jwt>
+    Gateway->>Auth: GET /validate-header<br/>Authorization: Bearer <admin-jwt>
+    Auth-->>Gateway: {"valid": true, "username": "admin", "role": "admin"}
+    Gateway->>App: GET /api/v1/admin<br/>X-Username: admin<br/>X-Role: admin
+    Note over App: Check: role == "admin"? ✓ Yes
+    App-->>Gateway: {"message": "Welcome to admin panel", "role": "admin"}
+    Gateway-->>Traefik: Response
+    Traefik-->>Client: Response
 ```
 
 ### Regular User Tries Admin Endpoint
 
-```
-1. Client → Gateway
-   GET /api/v1/admin
-   Authorization: Bearer <alice-jwt-token>
-
-2. Gateway → Auth Server
-   (Validates JWT successfully)
-
-3. Gateway → App
-   GET /api/v1/admin
-   X-Username: alice
-   X-Role: user
-
-4. App checks: role == "admin"?
-   ✗ No → Deny
-   
-5. App → Client
-   HTTP 403 Forbidden
-   "Forbidden: insufficient permissions"
+```mermaid
+sequenceDiagram
+    participant Client
+    participant Traefik
+    participant Gateway as API Gateway
+    participant Auth as Auth Server
+    participant App as App Service
+    
+    Client->>Traefik: GET /api/v1/admin<br/>Authorization: Bearer <alice-jwt>
+    Traefik->>Gateway: GET /api/v1/admin<br/>Authorization: Bearer <alice-jwt>
+    Gateway->>Auth: GET /validate-header<br/>Authorization: Bearer <alice-jwt>
+    Auth-->>Gateway: {"valid": true, "username": "alice", "role": "user"}
+    Gateway->>App: GET /api/v1/admin<br/>X-Username: alice<br/>X-Role: user
+    Note over App: Check: role == "admin"? ✗ No
+    App-->>Gateway: HTTP 403 Forbidden<br/>"Forbidden: insufficient permissions"
+    Gateway-->>Traefik: 403 Response
+    Traefik-->>Client: 403 Response
 ```
 
 ## Code Changes

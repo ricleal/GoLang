@@ -115,15 +115,28 @@ docker-compose logs -f traefik
 
 ## Architecture Summary
 
-```
-Client → Traefik (:8000 - SINGLE ENTRY POINT)
-         │  [Rate Limit + Routing]
-         │
-         ├─→ /login → Auth Server (internal)
-         │            [JWT Issue/Validate]
-         │
-         └─→ /api/* → API Gateway (2 replicas) → App (2 replicas)
-                      [Auth Check]                [Business Logic]
+```mermaid
+graph LR
+    Client[Client]
+    
+    subgraph Traefik[":8000 - SINGLE ENTRY POINT"]
+        TLB["Traefik<br/>Rate Limit + Routing"]
+    end
+    
+    AuthServer["Auth Server<br/>(internal)<br/>JWT Issue/Validate"]
+    
+    subgraph Gateway["API Gateway (2 replicas)"]
+        GW["Auth Check"]
+    end
+    
+    subgraph Apps["App (2 replicas)"]
+        App["Business Logic"]
+    end
+    
+    Client --> TLB
+    TLB -->|/login| AuthServer
+    TLB -->|/api/*| GW
+    GW --> App
 ```
 
 **Note**: Auth server is NOT directly accessible - all traffic goes through Traefik

@@ -4,34 +4,34 @@ This project demonstrates a microservices architecture with **decoupled authenti
 
 ## Architecture
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    Traefik Load Balancer :8000                   │
-│  • SINGLE ENTRY POINT - All traffic goes through here           │
-│  • Rate Limiting: 10 req/sec avg, burst of 20 (DDoS protection) │
-│  • Routes: /login, /validate-header → auth-server               │
-│  •         /api/* → api-gateway                                  │
-│  • Dashboard: http://localhost:8080/dashboard/                  │
-└────────────────────────────┬─────────────────────────────────────┘
-                             │
-          ┌──────────────────┼──────────────────┐
-          ▼                  ▼                  ▼
-┌────────────────┐ ┌───────────────────────────┐
-│  Auth Server   │ │  API Gateway (2 replicas) │
-│  • Issues JWT  │ │  • Validates JWT          │
-│  • Validates   │ │  • Adds X-Username header │
-│  • User roles  │ │  • Adds X-Role header     │
-│  (Internal)    │ │  • Proxies to app         │
-└────────────────┘ └──────────────┬────────────┘
-                                  │
-                    ┌─────────────┴─────────────┐
-                    ▼                           ▼
-          ┌───────────────────────┐   ┌───────────────────────┐
-          │     App (Replica 1)   │   │     App (Replica 2)   │
-          │  • Business logic     │   │  • Business logic     │
-          │  • Authorization      │   │  • Authorization      │
-          │  • Trusts gateway     │   │  • Trusts gateway     │
-          └───────────────────────┘   └───────────────────────┘
+```mermaid
+graph TB
+    Client[Client]
+    
+    subgraph Traefik["Traefik Load Balancer :8000"]
+        TLB["SINGLE ENTRY POINT<br/>• Rate Limiting: 10 req/sec avg, burst of 20<br/>• Routes: /login, /validate-header → auth-server<br/>• Routes: /api/* → api-gateway<br/>• Dashboard: http://localhost:8080/dashboard/"]
+    end
+    
+    AuthServer["Auth Server<br/>(Internal)<br/>• Issues JWT<br/>• Validates tokens<br/>• User roles"]
+    
+    subgraph Gateway["API Gateway (2 replicas)"]
+        GW1["Gateway 1<br/>• Validates JWT<br/>• Adds X-Username<br/>• Adds X-Role<br/>• Proxies to app"]
+        GW2["Gateway 2"]
+    end
+    
+    subgraph Apps["App Service (2 replicas)"]
+        App1["App 1<br/>• Business logic<br/>• Authorization<br/>• Trusts gateway"]
+        App2["App 2<br/>• Business logic<br/>• Authorization<br/>• Trusts gateway"]
+    end
+    
+    Client -->|All traffic| TLB
+    TLB -->|/login, /validate| AuthServer
+    TLB -->|/api/*| GW1
+    TLB -->|/api/*| GW2
+    GW1 -->|Docker DNS| App1
+    GW1 -->|Docker DNS| App2
+    GW2 -->|Docker DNS| App1
+    GW2 -->|Docker DNS| App2
 ```
 
 ### Components
