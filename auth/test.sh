@@ -10,8 +10,8 @@ YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
 # Wait for services to be ready
-echo "${YELLOW}Waiting for services to be ready...${NC}"
-sleep 5
+echo -e "${YELLOW}Testing...${NC}"
+
 
 # 1. Login
 echo ""
@@ -27,11 +27,11 @@ echo "Response: $LOGIN_RESPONSE"
 TOKEN=$(echo $LOGIN_RESPONSE | grep -o '"token":"[^"]*' | cut -d'"' -f4)
 
 if [ -z "$TOKEN" ]; then
-  echo "${RED}❌ Failed to get token${NC}"
+  echo -e "${RED}❌ Failed to get token${NC}"
   exit 1
 fi
 
-echo "${GREEN}✅ Token obtained: ${TOKEN:0:50}...${NC}"
+echo -e "${GREEN}✅ Token obtained: ${TOKEN:0:50}...${NC}"
 
 # 2. Test without auth (should fail)
 echo ""
@@ -44,26 +44,50 @@ RESPONSE=$(curl -s -w "\n%{http_code}" -X POST http://localhost:8000/api/v1/cows
   
 STATUS=$(echo "$RESPONSE" | tail -n1)
 if [ "$STATUS" = "401" ]; then
-  echo "${GREEN}✅ Correctly rejected (401 Unauthorized)${NC}"
+  echo -e "${GREEN}✅ Correctly rejected (401 Unauthorized)${NC}"
 else
-  echo "${RED}❌ Should have been rejected, got status: $STATUS${NC}"
+  echo -e "${RED}❌ Should have been rejected, got status: $STATUS${NC}"
 fi
 
 # 3. Test with valid auth
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "3. Testing with valid authentication (4 requests)..."
+echo "3. Testing load balancing with 10 requests (parallel batches)..."
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-for i in {1..4}; do
-  RESPONSE=$(curl -s -X POST http://localhost:8000/api/v1/cowsay \
-    -H "Authorization: Bearer $TOKEN" \
-    -H "Content-Type: application/json" \
-    -d "{\"message\":\"Request $i\"}")
-  
-  SERVICE=$(echo $RESPONSE | grep -o '"service":"[^"]*' | cut -d'"' -f4)
-  echo "   Request $i routed to: ${YELLOW}$SERVICE${NC}"
+
+# Temporary file to store instances
+TMPFILE=$(mktemp)
+
+# Make requests in small parallel batches to avoid rate limiting
+for batch in {1..2}; do
+  for i in {1..5}; do
+    (
+      RESPONSE=$(curl -s -X POST http://localhost:8000/api/v1/cowsay \
+        -H "Authorization: Bearer $TOKEN" \
+        -H "Content-Type: application/json" \
+        -d "{\"message\":\"Request $((($batch-1)*5+$i))\"}")
+      # Only process successful responses
+      if echo "$RESPONSE" | jq -e '.instance' > /dev/null 2>&1; then
+        INSTANCE=$(echo "$RESPONSE" | jq -r '.instance')
+        echo "$INSTANCE" >> "$TMPFILE"
+      fi
+    ) &
+  done
+  wait
+  sleep 0.3  # Small delay between batches to avoid rate limiting
 done
-echo "${GREEN}✅ Notice the load balancing between app1 and app2!${NC}"
+
+# Count instances and display results
+echo -e "${YELLOW}Distribution of requests across instances:${NC}"
+sort "$TMPFILE" | uniq -c | while read count instance; do
+  echo -e "   ${GREEN}$instance${NC}: $count requests"
+done
+
+TOTAL=$(wc -l < "$TMPFILE")
+echo -e "   ${GREEN}Total successful:${NC} $TOTAL/10 requests"
+
+rm -f "$TMPFILE"
+echo -e "${GREEN}✅ Docker DNS round-robin load balancing demonstrated!${NC}"
 
 # 4. Display full cowsay output
 echo ""
@@ -78,6 +102,7 @@ FULL_RESPONSE=$(curl -s -X POST http://localhost:8000/api/v1/cowsay \
 echo "$FULL_RESPONSE" | jq -r '.cow'
 echo ""
 echo "Service: $(echo $FULL_RESPONSE | jq -r '.service')"
+echo "Instance: $(echo $FULL_RESPONSE | jq -r '.instance')"
 echo "User: $(echo $FULL_RESPONSE | jq -r '.user')"
 
 # 5. Test with invalid token
@@ -92,9 +117,9 @@ RESPONSE=$(curl -s -w "\n%{http_code}" -X POST http://localhost:8000/api/v1/cows
   
 STATUS=$(echo "$RESPONSE" | tail -n1)
 if [ "$STATUS" = "401" ]; then
-  echo "${GREEN}✅ Correctly rejected (401 Unauthorized)${NC}"
+  echo -e "${GREEN}✅ Correctly rejected (401 Unauthorized)${NC}"
 else
-  echo "${RED}❌ Should have been rejected, got status: $STATUS${NC}"
+  echo -e "${RED}❌ Should have been rejected, got status: $STATUS${NC}"
 fi
 
 # 6. Test with wrong credentials
@@ -108,9 +133,9 @@ RESPONSE=$(curl -s -w "\n%{http_code}" -X POST http://localhost:8000/login \
 
 STATUS=$(echo "$RESPONSE" | tail -n1)
 if [ "$STATUS" = "401" ]; then
-  echo "${GREEN}✅ Correctly rejected (401 Unauthorized)${NC}"
+  echo -e "${GREEN}✅ Correctly rejected (401 Unauthorized)${NC}"
 else
-  echo "${RED}❌ Should have been rejected, got status: $STATUS${NC}"
+  echo -e "${RED}❌ Should have been rejected, got status: $STATUS${NC}"
 fi
 
 # 7. Health checks
@@ -119,19 +144,12 @@ echo "━━━━━━━━━━━━━━━━━━━━━━━━�
 echo "7. Health checks for all services..."
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
+# Note that only port 8000 is exposed for API Gateway
+
 echo -n "API Gateway: "
 curl -s http://localhost:8000/health | jq -r '.status'
 
-echo -n "Auth Server: "
-curl -s http://localhost:8080/health | jq -r '.status'
-
-echo -n "App1: "
-curl -s http://localhost:8081/health | jq -r '.status'
-
-echo -n "App2: "
-curl -s http://localhost:8082/health | jq -r '.status'
-
 echo ""
-echo "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-echo "${GREEN}✅ All tests completed successfully!${NC}"
-echo "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo -e "${GREEN}✅ All tests completed successfully!${NC}"
+echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"

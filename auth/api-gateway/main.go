@@ -85,7 +85,7 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Printf("Proxying request to: %s%s", appURL, r.URL.Path)
+	log.Printf("Proxying request to: %s%s (%s)", appURL, r.URL.Path, backendURL.Host)
 
 	proxy := httputil.NewSingleHostReverseProxy(backendURL)
 
