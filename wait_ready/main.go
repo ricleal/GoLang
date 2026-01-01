@@ -2,32 +2,33 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
-	"math/rand"
 	"time"
 )
 
-const readyTimeout = 3500 * time.Millisecond
-
-func waitUntilReady(ctx context.Context) error {
-	r := rand.Intn(7)
-	startDelay := time.Duration(r) * time.Second
+func waitUntilReady(ctx context.Context, name string, serviceStartDelay time.Duration) error {
 	start := time.Now()
 
-	log.Println("trying to be ready in", startDelay)
+	log.Printf("[%s] Service will be ready in %v", name, serviceStartDelay)
 
-	pollingInterval := 1 * time.Second
+	pollingInterval := 500 * time.Millisecond
 	ticker := time.NewTicker(pollingInterval)
 	defer ticker.Stop()
 
 	for {
 		select {
 		case <-ctx.Done():
+			log.Printf("[%s] Context canceled after %v: %v", name, time.Since(start), ctx.Err())
 			return ctx.Err()
 
 		case <-ticker.C:
-			log.Println("Polling for readiness every", pollingInterval)
-			if time.Since(start) >= startDelay {
+			elapsed := time.Since(start)
+			log.Printf("[%s] Polling... (elapsed: %v)", name, elapsed.Round(time.Millisecond))
+
+			// Service becomes ready after serviceStartDelay
+			if elapsed >= serviceStartDelay {
+				log.Printf("[%s] ✅ Service is READY! (took %v)", name, elapsed.Round(time.Millisecond))
 				return nil
 			}
 		}
@@ -37,13 +38,32 @@ func waitUntilReady(ctx context.Context) error {
 func main() {
 	ctx := context.Background()
 
-	waitCtx, cancel := context.WithTimeout(ctx, readyTimeout)
-	defer cancel()
+	fmt.Println("=== Testing Wait Until Ready ===")
+	fmt.Println()
 
-	log.Println("waiting to be ready in less than", readyTimeout)
-	err := waitUntilReady(waitCtx)
+	// Test 1: Context times out before service is ready (FAILS)
+	fmt.Println("--- Test 1: Short timeout (will fail) ---")
+	shortCtx, cancel1 := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel1()
+
+	err := waitUntilReady(shortCtx, "FastTimeout", 5*time.Second)
+	if err != nil {
+		log.Printf("[FastTimeout] ❌ Failed: %v\n", err)
+	}
+
+	fmt.Println()
+	time.Sleep(500 * time.Millisecond) // Brief pause between tests
+
+	// Test 2: Context has enough time for service to be ready (SUCCESS)
+	fmt.Println("--- Test 2: Long timeout (will succeed) ---")
+	longCtx, cancel2 := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel2()
+
+	err = waitUntilReady(longCtx, "SlowTimeout", 3*time.Second)
 	if err != nil {
 		log.Fatal(err)
 	}
-	log.Println("Ready")
+
+	fmt.Println()
+	fmt.Println("=== All tests completed ===")
 }
