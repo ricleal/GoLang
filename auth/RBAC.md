@@ -33,23 +33,29 @@ New `/api/v1/admin` endpoint that:
 ```mermaid
 sequenceDiagram
     participant Client
-    participant Auth as Auth Server
     participant Traefik
-    participant Gateway as API Gateway<br/>(2 replicas)
-    participant App as App Service<br/>(2 replicas)
+    participant Gateway as API Gateway
+    participant Auth as Auth Server
+    participant App as App Service
     
-    Client->>Auth: Login (username/password)
+    Note over Client,Auth: Login Flow
+    Client->>Traefik: POST /login (username/password)
+    Traefik->>Gateway: Forward to gateway
+    Gateway->>Auth: Proxy to auth server
     Note over Auth: Creates JWT with<br/>username + role
-    Auth-->>Client: Returns token
+    Auth-->>Gateway: Returns token
+    Gateway-->>Traefik: Forward response
+    Traefik-->>Client: Returns token
     
-    Client->>Traefik: Protected request with JWT
-    Note over Traefik: 1. Rate limiting check<br/>2. Load balances to gateway
-    Traefik->>Gateway: Forward request
-    
-    Note over Gateway: 1. Validates JWT with Auth Server<br/>2. Receives username + role<br/>3. Adds X-Username/X-Role headers<br/>4. Forwards to app (no JWT)
-    Gateway->>App: Request with headers
-    
-    Note over App: 1. Trusts gateway headers<br/>2. Checks role requirement<br/>3. Returns 403 if insufficient
+    Note over Client,App: Protected Request Flow
+    Client->>Traefik: Request with JWT token
+    Note over Traefik: Rate limiting check
+    Traefik->>Gateway: Load balanced forward
+    Gateway->>Auth: Validate JWT
+    Auth-->>Gateway: Valid + username + role
+    Note over Gateway: Adds X-Username<br/>and X-Role headers
+    Gateway->>App: Forward with headers (no JWT)
+    Note over App: Check role requirement<br/>403 if insufficient
     App-->>Gateway: Response
     Gateway-->>Traefik: Response
     Traefik-->>Client: Response

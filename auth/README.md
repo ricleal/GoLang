@@ -9,77 +9,71 @@ graph TB
     Client[Client]
     
     subgraph Traefik["Traefik Load Balancer :8000"]
-        TLB["SINGLE ENTRY POINT<br/>• Rate Limiting: 10 req/sec avg, burst of 20<br/>• Routes: /login, /validate-header → auth-server<br/>• Routes: /api/* → api-gateway<br/>• Dashboard: http://localhost:8080/dashboard/"]
+        TLB["SINGLE ENTRY POINT<br/>• Rate Limiting: 10 req/sec avg, burst of 20<br/>• Routes: ALL traffic → api-gateway<br/>• Dashboard: http://localhost:8080/dashboard/"]
     end
     
     AuthServer["Auth Server<br/>(Internal)<br/>• Issues JWT<br/>• Validates tokens<br/>• User roles"]
     
-    subgraph Gateway["API Gateway (2 replicas)"]
-        GW1["Gateway 1<br/>• Validates JWT<br/>• Adds X-Username<br/>• Adds X-Role<br/>• Proxies to app"]
-        GW2["Gateway 2"]
+    subgraph Gateway["API Gateway"]
+        GW["Gateway Instance<br/>(2+ replicas)<br/>• Proxies /login<br/>• Validates JWT<br/>• Adds X-Username<br/>• Adds X-Role<br/>• Proxies to app"]
     end
     
-    subgraph Apps["App Service (2 replicas)"]
-        App1["App 1<br/>• Business logic<br/>• Authorization<br/>• Trusts gateway"]
-        App2["App 2<br/>• Business logic<br/>• Authorization<br/>• Trusts gateway"]
+    subgraph Apps["App Service"]
+        App["App Instance<br/>(2+ replicas)<br/>• Business logic<br/>• Authorization<br/>• Trusts gateway"]
     end
     
-    Client -->|All traffic| TLB
-    TLB -->|/login, /validate| AuthServer
-    TLB -->|/api/*| GW1
-    TLB -->|/api/*| GW2
-    GW1 -->|Docker DNS| App1
-    GW1 -->|Docker DNS| App2
-    GW2 -->|Docker DNS| App1
-    GW2 -->|Docker DNS| App2
+    Client -->|ALL traffic| TLB
+    TLB -->|Round-robin across<br/>all gateway replicas| Gateway
+    Gateway -->|Internal calls| AuthServer
+    Gateway -->|Docker DNS LB across<br/>all app replicas| Apps
 ```
 
 ### Components
 
 1. **Traefik Load Balancer** (`:8000` - ONLY exposed port)
-   - **Single entry point** for ALL client traffic including authentication
-   - Routes `/login` and `/validate-header` to auth-server
-   - Routes `/api/*` to api-gateway replicas
+   - **Single entry point** for ALL client traffic
+   - Routes ALL requests to api-gateway replicas
    - Rate limiting: 10 req/sec average, burst of 20 (DDoS protection)
-   - Round-robin load balancing
+   - Round-robin load balancing between gateway replicas
    - Dashboard at http://localhost:8080/dashboard/
 
 2. **Auth Server** (internal only - not directly accessible)
    - Issues JWT tokens upon successful login
    - Validates JWT tokens for the gateway
    - Manages user credentials and roles
-   - Accessed through Traefik routing
+   - **Only accessed by API Gateway** (not Traefik directly)
    - Decoupled from business logic
 
-3. **API Gateway** (2 replicas)
+3. **API Gateway** (horizontally scalable, currently 2 replicas)
+   - **True entry point** - ALL traffic flows through here
+   - Proxies `/login` requests to auth-server
    - Authentication boundary - validates JWT once per request
    - Calls auth server to validate tokens
    - Adds `X-Username` and `X-Role` headers to proxied requests
    - Forwards requests to app services (no JWT forwarded)
+   - Scale by changing `replicas` in docker-compose.yml
 
-4. **App Service** (2 replicas)
+4. **App Service** (horizontally scalable, currently 2 replicas)
    - Business logic services (cowsay implementation)
    - Authorization with role-based access control (RBAC)
    - Trusts `X-Username` and `X-Role` headers from gateway
    - No direct JWT validation (trusts the gateway)
-   - Horizontally scalable with Docker Compose replicas
+   - Scale by changing `replicas` in docker-compose.yml
+   - Docker DNS provides automatic load balancing across all replicas
 
 ## Key Features
 
 ✅ **Rate Limiting**: Traefik blocks DDoS attacks with 10 req/sec average, burst of 20  
-✅ **Load Balancing**: Round-robin across 2 gateway + 2 app replicas  
+✅ **Horizontal Scaling**: Scale to any number of replicas with a single config change  
+✅ **Load Balancing**: Automatic round-robin distribution across all service replicas  
 ✅ **Decoupled Auth**: Authentication at gateway, authorization at app layer  
 ✅ **JWT-based**: Stateless authentication using JWT tokens  
 ✅ **Role-Based Access Control (RBAC)**: Users have roles (user, admin) with different permissions  
 ✅ **High Availability**: Multiple replicas ensure no single point of failure  
 ✅ **Monitoring**: Traefik dashboard shows service health and routing  
-✅ **Horizontal Scaling**: App service uses Docker Compose replicas for easy scaling  
-✅ **Load Balancing**: Round-robin distribution across multiple app instances  
 ✅ **Health Checks**: All services expose health endpoints  
 ✅ **Containerized**: Fully containerized with Docker Compose  
-
-## Quick Start
-
+✅ **Zero-Config Service Discovery**: Docker DNS handles automatic load balancing
 ### Prerequisites
 
 - Docker and Docker Compose installed
@@ -93,6 +87,8 @@ docker-compose up --build
 ```
 
 Wait for all services to be healthy (~30 seconds).
+
+> 💡 **Note**: By default, this starts 2 replicas each of the API Gateway and App services. You can scale to more replicas - see the [Scaling Services](#scaling-services) section below.
 
 ### 2. Login to get JWT token
 
@@ -136,7 +132,50 @@ Response:
 }
 ```
 
-Notice the `service` field alternates between `app1` and `app2` due to load balancing!
+The `service` field shows which replica handled the request. With the default 2 replicas, responses alternate between `app1` and `app2`. With more replicas, you'll see round-robin distribution across all instances.
+
+## Scaling Services
+
+The architecture is designed for horizontal scalability. You can easily increase the number of replicas for both the API Gateway and App services.
+
+### Scaling in docker-compose.yml
+
+Edit `docker-compose.yml` and change the `replicas` value:
+
+```yaml
+api-gateway:
+  # ... other config ...
+  deploy:
+    replicas: 5  # Scale to 5 gateway instances
+
+app:
+  # ... other config ...
+  deploy:
+    replicas: 10  # Scale to 10 app instances
+```
+
+### Scaling with docker-compose command
+
+```bash
+# Scale services without editing the file
+docker-compose up --scale api-gateway=5 --scale app=10 -d
+
+# Verify scaling
+docker-compose ps
+```
+
+### How Load Balancing Works at Scale
+
+- **Traefik → API Gateway**: Traefik automatically detects all gateway replicas and distributes traffic using round-robin
+- **API Gateway → App**: Docker DNS provides built-in load balancing across all app replicas
+- **No configuration changes needed**: Services auto-discover each other via Docker's internal DNS
+
+### Benefits of Scaling
+
+- **Handle more traffic**: Each replica can process requests independently
+- **High availability**: If one instance fails, others continue serving traffic
+- **Zero configuration**: Load balancing is automatic
+- **Cost effective**: Scale only the services that need it (e.g., scale apps more than gateways)
 
 ## Available Users
 
@@ -183,7 +222,7 @@ curl -X GET http://localhost:8000/api/v1/admin \
 
 ## API Endpoints
 
-### API Gateway (`:8000`)
+### Public Endpoints (via Traefik at `:8000`)
 
 | Endpoint | Method | Auth Required | Role Required | Description |
 |----------|--------|---------------|---------------|-------------|
@@ -259,7 +298,7 @@ for i in {1..4}; do
     -d "{\"message\":\"Request $i\"}" | grep -o '"service":"[^"]*' | cut -d'"' -f4
 done
 echo ""
-echo "✅ Notice the load balancing between app1 and app2!"
+echo "✅ Notice the load balancing between service replicas (default: 2 replicas)!"
 echo ""
 
 # 4. Test with invalid token
@@ -286,10 +325,18 @@ Save this as `test.sh`, make it executable (`chmod +x test.sh`), and run it!
 
 ### Why API Gateway?
 
-1. **Single Entry Point**: Clients only need to know one URL
-2. **Authentication at the Edge**: Validate tokens before routing to services
-3. **Load Balancing**: Distribute traffic across multiple service instances
-4. **Service Discovery**: Backend services can scale independently
+1. **True Single Entry Point**: ALL traffic flows through the gateway (via Traefik)
+2. **Centralized Authentication**: Validate tokens once before routing to any service
+3. **Request Enrichment**: Adds user context (X-Username, X-Role) to all backend requests
+4. **Service Abstraction**: Backend services don't need to know about JWT validation
+5. **Load Balancing**: Traefik distributes traffic across gateway replicas
+
+### Why Traefik?
+
+1. **Production-Grade Load Balancer**: Industry-standard reverse proxy
+2. **Rate Limiting**: Built-in DDoS protection
+3. **Service Discovery**: Automatic Docker service detection
+4. **Monitoring**: Dashboard for real-time traffic monitoring
 
 ### Why Separate Auth Server?
 
@@ -319,20 +366,17 @@ For production, consider:
 Check service health:
 
 ```bash
-# API Gateway
+# External Access (via Traefik at :8000)
 curl http://localhost:8000/health
 curl http://localhost:8000/info
 
-# Auth Server
-curl http://localhost:8080/health
+# Internal services are NOT exposed to host - only accessible within Docker network
+# To check internal service health, exec into a container:
+docker exec -it api-gateway-1 wget -q -O- http://auth-server:8080/health
+docker exec -it api-gateway-1 wget -q -O- http://app:8081/health
 
-# App1
-curl http://localhost:8081/health
-curl http://localhost:8081/info
-
-# App2
-curl http://localhost:8082/health
-curl http://localhost:8082/info
+# Or check Traefik dashboard for service health
+# http://localhost:8080/dashboard/
 ```
 
 ## Logs
@@ -343,13 +387,21 @@ View logs from all services:
 docker-compose logs -f
 ```
 
-View logs from specific service:
+View logs from specific service (all replicas):
 
 ```bash
 docker-compose logs -f api-gateway
 docker-compose logs -f auth-server
-docker-compose logs -f app1
-docker-compose logs -f app2
+docker-compose logs -f app
+```
+
+View logs from a specific replica instance:
+
+```bash
+docker logs -f auth-api-gateway-1
+docker logs -f auth-api-gateway-2
+docker logs -f auth-app-1
+docker logs -f auth-app-2
 ```
 
 ## Stopping the Services
@@ -368,7 +420,7 @@ docker-compose down -v
 
 ```
 auth/
-├── docker-compose.yml          # Orchestrates all services
+├── docker-compose.yml          # Orchestrates all services + replica config
 ├── README.md                   # This file
 ├── test.sh                     # Testing script
 ├── auth-server/
@@ -376,29 +428,29 @@ auth/
 │   ├── go.mod
 │   └── Dockerfile
 ├── api-gateway/
-│   ├── main.go                 # Load balancer & auth proxy
+│   ├── main.go                 # Auth proxy + request enrichment
 │   ├── go.mod
-│   └── Dockerfile
-├── app1/
-│   ├── main.go                 # Cowsay service instance 1
-│   ├── go.mod
-│   └── Dockerfile
-└── app2/
-    ├── main.go                 # Cowsay service instance 2
+│   └── Dockerfile              # Scaled to n replicas via docker-compose
+└── app/
+    ├── main.go                 # Business logic (cowsay + RBAC)
     ├── go.mod
-    └── Dockerfile
+    └── Dockerfile              # Scaled to n replicas via docker-compose
 ```
+
+**Note**: The `api-gateway` and `app` services are deployed as multiple replicas using Docker Compose's `deploy.replicas` configuration. Each replica runs from the same codebase but as independent container instances.
 
 ## Further Enhancements
 
 - [ ] Add database for user management
 - [ ] Implement token refresh mechanism
-- [ ] Add role-based access control (RBAC)
+- [x] ~~Add role-based access control (RBAC)~~ - ✅ Implemented
 - [ ] Implement circuit breaker pattern
 - [ ] Add distributed tracing (OpenTelemetry)
 - [ ] Add metrics (Prometheus)
-- [ ] Add more sophisticated load balancing algorithms
+- [ ] Implement health-based load balancing (remove unhealthy instances)
+- [ ] Add Redis for distributed rate limiting across replicas
 - [ ] Implement service mesh (Istio, Linkerd)
+- [ ] Add auto-scaling based on CPU/memory metrics
 
 ## License
 

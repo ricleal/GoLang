@@ -89,7 +89,7 @@ You should see many `429` (Rate Limited) responses.
 | Username | Password     | Role  | Access                    |
 |----------|--------------|-------|---------------------------|
 | alice    | password123  | user  | Public endpoints only     |
-| bob      | password123  | user  | Public endpoints only     |
+| bob      | password456  | user  | Public endpoints only     |
 | admin    | admin123     | admin | All endpoints + admin API |
 
 ## Monitoring
@@ -106,40 +106,48 @@ Open http://localhost:8080/dashboard/ to see:
 # Check all service health
 docker-compose ps
 
-# View logs
+# View logs from all replicas of a service
 docker-compose logs -f api-gateway
 docker-compose logs -f app
 docker-compose logs -f auth-server
 docker-compose logs -f traefik
+
+# View logs from specific replica instance
+docker logs -f auth-api-gateway-1
+docker logs -f auth-app-1
 ```
 
 ## Architecture Summary
 
 ```mermaid
-graph LR
+graph TB
     Client[Client]
     
     subgraph Traefik[":8000 - SINGLE ENTRY POINT"]
-        TLB["Traefik<br/>Rate Limit + Routing"]
+        TLB["Traefik<br/>Rate Limit + Load Balance"]
     end
     
     AuthServer["Auth Server<br/>(internal)<br/>JWT Issue/Validate"]
     
-    subgraph Gateway["API Gateway (2 replicas)"]
-        GW["Auth Check"]
+    subgraph Gateway["API Gateway<br/>(2+ replicas)"]
+        GW["Auth Check<br/>Header Enrichment"]
     end
     
-    subgraph Apps["App (2 replicas)"]
-        App["Business Logic"]
+    subgraph Apps["App Service<br/>(2+ replicas)"]
+        App["Business Logic<br/>RBAC"]
     end
     
-    Client --> TLB
-    TLB -->|/login| AuthServer
-    TLB -->|/api/*| GW
-    GW --> App
+    Client -->|ALL traffic| TLB
+    TLB -->|Load balanced| Gateway
+    Gateway -->|Login/Validate| AuthServer
+    Gateway -->|Proxies| Apps
 ```
 
-**Note**: Auth server is NOT directly accessible - all traffic goes through Traefik
+**Key Points**:
+- **API Gateway** is the true entry point - handles ALL requests including `/login`
+- **Auth Server** is internal only - accessed by gateway for JWT operations
+- **Traefik** provides load balancing and rate limiting in front of the gateway
+- **App Service** trusts gateway headers for authorization (RBAC)
 
 ## Rate Limiting Details
 
@@ -147,6 +155,15 @@ graph LR
 - **Burst**: 20 requests allowed in short bursts
 - **Response**: HTTP 429 (Too Many Requests) when limit exceeded
 - **Recovery**: Automatic once request rate drops below limit
+- **Scope**: Applied at Traefik level before reaching API Gateway
+
+## Scaling Services
+
+To scale services, edit `docker-compose.yml` or use:
+```bash
+# Scale to more replicas
+docker-compose up --scale api-gateway=5 --scale app=10 -d
+```
 
 ## Stopping Services
 
