@@ -1,0 +1,84 @@
+services:
+  # Traefik - Load Balancer (Entry Point)
+  traefik:
+    image: traefik:v3.0
+    container_name: traefik-auth2
+    command:
+      - "--api.insecure=true"
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--entrypoints.web.address=:80"
+      - "--log.level=INFO"
+    ports:
+      - "8000:80"      # Main entry point
+      - "8080:8080"    # Traefik dashboard
+    volumes:
+      - "/var/run/docker.sock:/var/run/docker.sock:ro"
+    networks:
+      - auth2-network
+
+  # Auth Server - JWT issuer and validator
+  auth-server:
+    build:
+      context: ./auth-server
+      dockerfile: Dockerfile
+    container_name: auth2-auth-server
+    environment:
+      - PORT=8080
+    networks:
+      - auth2-network
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  # Envoy Gateway - Authentication & Authorization Gateway
+  envoy:
+    image: envoyproxy/envoy:v1.31-latest
+    container_name: auth2-envoy
+    volumes:
+      - ./envoy-simple.yaml:/etc/envoy/envoy.yaml:ro
+    networks:
+      - auth2-network
+    depends_on:
+      auth-server:
+        condition: service_healthy
+    labels:
+      # Enable Traefik
+      - "traefik.enable=true"
+      
+      # HTTP Router - ALL traffic goes through Envoy
+      - "traefik.http.routers.envoy.rule=PathPrefix(`/`)"
+      - "traefik.http.routers.envoy.entrypoints=web"
+      - "traefik.http.routers.envoy.service=envoy"
+      
+      # Load Balancer - Envoy listens on port 10000
+      - "traefik.http.services.envoy.loadbalancer.server.port=10000"
+
+  # Application Service - Business logic (with replicas)
+  app:
+    build:
+      context: ./app
+      dockerfile: Dockerfile
+    environment:
+      - APP_NAME=app
+      - PORT=8081
+    networks:
+      - auth2-network
+    depends_on:
+      auth-server:
+        condition: service_healthy
+    deploy:
+      replicas: 2
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8081/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+networks:
+  auth2-network:
+    driver: bridge
