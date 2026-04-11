@@ -1,17 +1,26 @@
+// Package claims defines the shared data types and Kafka topic constants used by
+// the producer, consumer, and inspector executables.
 package claims
 
 import "time"
 
 const (
-	TopicAuto = "claims-auto"
-	TopicHome = "claims-home"
-	TopicLife = "claims-life"
+	TopicAuto = "claims-auto" // topic for automobile insurance claims
+	TopicHome = "claims-home" // topic for home insurance claims
+	TopicLife = "claims-life" // topic for life insurance claims
 
+	// NumProducerWorkers is the default number of concurrent producer goroutines.
 	NumProducerWorkers = 5
-	BrokerAddr         = "localhost:9092"
+	// BrokerAddr is the default Kafka broker address for local development.
+	BrokerAddr = "localhost:9092"
 )
 
-var Topics = []string{TopicAuto, TopicHome, TopicLife}
+//nolint:gochecknoglobals // used as a constant list across packages
+var Topics = []string{
+	TopicAuto,
+	TopicHome,
+	TopicLife,
+}
 
 // Claim represents an insurance claim.
 type Claim struct {

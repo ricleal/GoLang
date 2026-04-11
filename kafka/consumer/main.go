@@ -18,34 +18,40 @@ import (
 	"exp/kafka/claims"
 )
 
-// topicFlag allows -topic to be repeated: -topic claims_auto -topic claims_home
+// statInterval controls how often the consumer prints a stats line to stdout.
+const statInterval = 5 * time.Second
+
+// topicFlag is a repeatable string flag: -topic claims-auto -topic claims-home.
+// It satisfies the flag.Value interface.
 type topicFlag []string
 
 func (t *topicFlag) String() string     { return strings.Join(*t, ",") }
 func (t *topicFlag) Set(v string) error { *t = append(*t, v); return nil }
 
-func main() {
+func run() int {
 	var topics topicFlag
 	flag.Var(&topics, "topic", "Kafka topic to consume (repeatable; omit for all topics)")
 	broker := flag.String("broker", claims.BrokerAddr, "Kafka broker address")
 	groupID := flag.String("group", "", "Consumer group ID (default: derived from topics)")
 	flag.Parse()
 
+	// Default to all known topics when none are specified.
 	if len(topics) == 0 {
 		topics = claims.Topics
 	}
+	// Derive a stable group ID from the topic list so each unique subscription
+	// gets its own group, enabling fan-out by default.
 	if *groupID == "" {
 		*groupID = "group-" + strings.Join(topics, "+")
 	}
 
-	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
-		Level: slog.LevelInfo,
-	})))
+	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
 	cfg := sarama.NewConfig()
+	// Start from the newest offset so new consumers don't replay old messages.
 	cfg.Consumer.Offsets.Initial = sarama.OffsetNewest
 	cfg.Consumer.Group.Rebalance.GroupStrategies = []sarama.BalanceStrategy{
 		sarama.NewBalanceStrategyRoundRobin(),
@@ -53,59 +59,72 @@ func main() {
 
 	group, err := sarama.NewConsumerGroup([]string{*broker}, *groupID, cfg)
 	if err != nil {
-		slog.Error("create consumer group", "error", err)
-		os.Exit(1)
+		logger.Error("create consumer group", "error", err)
+		return 1
 	}
 	defer group.Close()
 
-	slog.Info("consumer started", "broker", *broker, "group", *groupID, "topics", []string(topics))
+	logger.Info("consumer started", "broker", *broker, "group", *groupID, "topics", []string(topics))
 
-	stats := newStats()
+	st := newStats()
 
-	// Print stats every 5 s.
+	// Background goroutine periodically prints a stats snapshot.
 	go func() {
-		ticker := time.NewTicker(5 * time.Second)
+		ticker := time.NewTicker(statInterval)
 		defer ticker.Stop()
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				fmt.Printf("── stats (group=%s)  %s\n", *groupID, stats.tick())
+				fmt.Fprintf(os.Stdout, "── stats (group=%s)  %s\n", *groupID, st.tick())
 			}
 		}
 	}()
 
-	handler := &handler{stats: stats, group: *groupID}
+	h := &handler{stats: st, group: *groupID, logger: logger}
 	for {
-		if err := group.Consume(ctx, []string(topics), handler); err != nil {
+		if consumeErr := group.Consume(ctx, []string(topics), h); consumeErr != nil {
 			if ctx.Err() != nil {
 				break
 			}
-			slog.Error("consume error", "error", err)
+			logger.Error("consume error", "error", consumeErr)
 		}
 		if ctx.Err() != nil {
 			break
 		}
 	}
 
-	fmt.Printf("\n── final stats (group=%s)  %s\n", *groupID, stats.summary())
-	slog.Info("consumer stopped")
+	fmt.Fprintf(os.Stdout, "\n── final stats (group=%s)  %s\n", *groupID, st.summary())
+	logger.Info("consumer stopped")
+	return 0
+}
+
+func main() {
+	os.Exit(run())
 }
 
 // ── handler ──────────────────────────────────────────────────────────────────
 
+// handler implements sarama.ConsumerGroupHandler. One instance is shared across
+// all topic/partition goroutines spawned by the consumer group.
 type handler struct {
-	stats *stats
-	group string
+	stats  *stats
+	group  string
+	logger *slog.Logger
 }
 
+// Setup is called at the start of each rebalance cycle.
 func (h *handler) Setup(sarama.ConsumerGroupSession) error {
-	slog.Info("rebalanced", "group", h.group)
+	h.logger.Info("rebalanced", "group", h.group)
 	return nil
 }
+
+// Cleanup is called at the end of each rebalance cycle.
 func (h *handler) Cleanup(sarama.ConsumerGroupSession) error { return nil }
 
+// ConsumeClaim processes one partition claim until the session ends or the
+// messages channel is closed by the library.
 func (h *handler) ConsumeClaim(session sarama.ConsumerGroupSession, claim sarama.ConsumerGroupClaim) error {
 	for {
 		select {
@@ -115,13 +134,13 @@ func (h *handler) ConsumeClaim(session sarama.ConsumerGroupSession, claim sarama
 			}
 			var c claims.Claim
 			if err := json.Unmarshal(msg.Value, &c); err != nil {
-				slog.Error("unmarshal", "error", err)
+				h.logger.Error("unmarshal", "error", err)
 				session.MarkMessage(msg, "")
 				continue
 			}
 			h.stats.record(c)
 			session.MarkMessage(msg, "")
-			slog.Debug("consumed",
+			h.logger.Debug("consumed",
 				"topic", msg.Topic,
 				"partition", msg.Partition,
 				"offset", msg.Offset,
@@ -137,13 +156,14 @@ func (h *handler) ConsumeClaim(session sarama.ConsumerGroupSession, claim sarama
 
 // ── stats ─────────────────────────────────────────────────────────────────────
 
+// stats accumulates counters for all messages processed by this consumer instance.
 type stats struct {
 	mu          sync.Mutex
 	count       int64
-	lastCount   int64 // count at the previous tick
+	lastCount   int64 // snapshot at the previous tick, used to compute delta
 	totalAmount float64
 	byType      map[string]int64
-	startedAt   time.Time
+	startedAt   time.Time // set on the first message, used for throughput rate
 }
 
 func newStats() *stats {
@@ -161,7 +181,8 @@ func (s *stats) record(c claims.Claim) {
 	s.byType[c.ClaimType]++
 }
 
-// tick is called once per stats interval; it reports idle when nothing arrived.
+// tick is called once per statInterval. It computes the delta since the last call
+// and returns a human-readable status string, reporting idle when no new messages arrived.
 func (s *stats) tick() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()

@@ -20,11 +20,12 @@ import (
 )
 
 const (
-	minAmount    = 100.0
-	amountRange  = 9900.0
-	maxCustomers = 1000
+	minAmount    = 100.0  // minimum claim amount in USD
+	amountRange  = 9900.0 // range added to minAmount: results in [100, 10000]
+	maxCustomers = 1000   // pool of simulated customers (customer-0001 … customer-1000)
 )
 
+// claimTypeList drives random claim-type selection in randomClaim.
 var claimTypeList = []string{"auto", "home", "life"} //nolint:gochecknoglobals // package-level constant list
 
 func run() int {
@@ -34,6 +35,7 @@ func run() int {
 
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
+	// Cancel the context on SIGINT/SIGTERM so all worker goroutines stop cleanly.
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
@@ -52,6 +54,7 @@ func run() int {
 
 	logger.Info("producer started", "broker", *broker, "workers", *workers, "topics", claims.Topics)
 
+	// wg.Go launches each worker and wg.Wait blocks until all return.
 	var wg sync.WaitGroup
 	for i := range *workers {
 		wg.Go(func() {
@@ -67,8 +70,11 @@ func main() {
 	os.Exit(run())
 }
 
+// work runs a tight produce loop until ctx is cancelled. It generates a random
+// claim, marshals it to JSON, and sends it to the appropriate topic.
 func work(ctx context.Context, logger *slog.Logger, sp sarama.SyncProducer, workerID int) {
 	for {
+		// Non-blocking check so the worker exits promptly on shutdown.
 		select {
 		case <-ctx.Done():
 			logger.Info("worker stopping", "worker", workerID)
@@ -110,6 +116,7 @@ func work(ctx context.Context, logger *slog.Logger, sp sarama.SyncProducer, work
 	}
 }
 
+// randomClaim generates a claim with uniformly distributed type, customer, and amount.
 func randomClaim() claims.Claim {
 	ct := claimTypeList[rand.IntN(len(claimTypeList))] //nolint:gosec // simulation data, crypto randomness not needed
 	return claims.Claim{

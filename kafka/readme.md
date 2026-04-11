@@ -1,24 +1,120 @@
-# Prompt
+# Kafka Experiment
 
-In this folder I would like to do an experiment with Kafka. I want to see how it works, how to set it up, and how to use it in a simple application. I will be using Docker to set up Kafka (Apache Kafka Without Its ZooKeeper) , and then I will write a simple producer and consumer in Go to test it out.
+A hands-on experiment with Apache Kafka in Go. Demonstrates producers, consumers
+(fan-out / competing-consumers), and a live inspection tool.
 
-The producer should have 5 go routines and produce `claims` until we press Ctrl+C. The `claims` should have the strucure:
+## Architecture
 
-```go
-type Claim struct {
-    ID        string `json:"id"` // unique identifier for the claim
-    CustomerID string `json:"customer_id"` // identifier for the customer making the claim (uniformly distributed between 1 and 1000)
-    ClaimType string `json:"claim_type"` // type of the claim (uniformly distributed between "auto", "home", "life")
-    Amount    float64 `json:"amount"` // amount of the claim (uniformly distributed between 100 and 10000)
-    Timestamp time.Time `json:"timestamp"` // time when the claim was created
-}
+| Package | Role |
+|---|---|
+| `claims` | Shared data types and topic constants |
+| `producer` | Publishes random insurance claims to Kafka topics |
+| `consumer` | Subscribes to one or more topics; prints live stats |
+| `inspector` | Displays per-partition offsets and consumer-group lag |
+
+**Topics**: `claims-auto`, `claims-home`, `claims-life` — 5 partitions each.  
+Messages are keyed by `CustomerID` (hash partitioner) so the same customer always
+hits the same partition, avoiding hot spots.
+
+## Prerequisites
+
+- Docker + Docker Compose
+- Go 1.25+
+
+## Start Kafka
+
+```sh
+cd kafka
+docker compose up -d
 ```
 
-The Kafka should have 5 partitions, and 3 topics: `claims_auto`, `claims_home`, and `claims_life`. The producer should produce claims to the appropriate topic based on the `ClaimType`. To avoid hot partitioning, the producer should use the `CustomerID` as the key when producing messages to Kafka. This way, claims from the same customer will go to the same partition, but claims from different customers will be distributed across partitions.
+Starts Apache Kafka 4.1.2 in **KRaft mode** (no ZooKeeper) and creates the three
+topics automatically via a one-shot init container.
 
-I want to to test fan-out by having 4 consumers, one of them reading from `claims_auto`, one reading from `claims_home`, one reading from `claims_life`, and one reading from all three topics. The consumer that reads from all three topics should be able to process claims of all types, while the other consumers should only process claims of their respective types.
+## Producer
 
-I will also want to test the performance of the producer and consumer, and see how they handle a high volume of messages. I will use a simple in-memory data structure to store the claims that have been processed by the consumers, and I will print out some statistics about the number of claims processed, the average amount of the claims, and the distribution of claim types.
+```sh
+go run ./kafka/producer/
+```
 
-I will also want to test the fault tolerance of the system by simulating failures in the producer and consumer. For example, I can simulate a failure in the producer by stopping it while it is producing messages, and then restarting it to see if it can resume producing messages without losing any data. Similarly, I can simulate a failure in the consumer by stopping it while it is consuming messages, and then restarting it to see if it can resume consuming messages without losing any data.
-Overall, this experiment will help me understand how Kafka works, how to set it up, and how to use it in a simple application. It will also help me understand the concepts of partitions, topics, producers, consumers, and fault tolerance in Kafka.
+| Flag | Default | Description |
+|---|---|---|
+| `-broker` | `localhost:9092` | Kafka broker address |
+| `-workers` | `5` | Number of concurrent producer goroutines |
+
+Press `Ctrl+C` to stop gracefully.
+
+## Consumers
+
+### Fan-out — one consumer per topic
+
+Each consumer group receives **all messages** independently:
+
+```sh
+# Terminal A
+go run ./kafka/consumer/ -topic claims-auto
+
+# Terminal B
+go run ./kafka/consumer/ -topic claims-home
+
+# Terminal C
+go run ./kafka/consumer/ -topic claims-life
+```
+
+### All-topics consumer
+
+```sh
+go run ./kafka/consumer/ -topic claims-auto -topic claims-home -topic claims-life
+```
+
+### Competing consumers (shared group)
+
+Multiple instances with the same `-group` ID split the partitions between them:
+
+```sh
+go run ./kafka/consumer/ -topic claims-auto -group workers
+go run ./kafka/consumer/ -topic claims-auto -group workers  # second terminal
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `-topic` | all topics | Topic to subscribe to (repeatable) |
+| `-broker` | `localhost:9092` | Kafka broker address |
+| `-group` | derived from topics | Consumer group ID |
+
+## Inspector
+
+```sh
+# Run once
+go run ./kafka/inspector/
+
+# Refresh every 3 seconds
+go run ./kafka/inspector/ -interval 3s
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `-broker` | `localhost:9092` | Kafka broker address |
+| `-interval` | `5s` | Refresh interval (`0` = run once) |
+
+Shows per-partition oldest/newest offsets and lag per consumer group.
+
+## Fault tolerance
+
+Stop the producer mid-run with `Ctrl+C`, then restart it:
+
+```sh
+go run ./kafka/producer/
+```
+
+Consumers resume from their **last committed offset** — no messages are lost. On
+the very first start, consumers begin at `OffsetNewest` (i.e. they skip messages
+produced before they joined). After that, committed offsets are used on every
+restart (at-least-once delivery semantics).
+
+## Stop Kafka
+
+```sh
+cd kafka
+docker compose down
+```
