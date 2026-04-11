@@ -16,6 +16,12 @@ A hands-on experiment with Apache Kafka in Go. Demonstrates producers, consumers
 Messages are keyed by `CustomerID` (hash partitioner) so the same customer always
 hits the same partition, avoiding hot spots.
 
+> **Per-customer ordering guarantee** — Kafka guarantees total ordering within a
+> partition. Because every claim from a given customer is routed to the same
+> partition, consumers always receive that customer's claims in the exact order
+> they were produced. There is no ordering guarantee *across* different customers,
+> since those may land on different partitions processed concurrently.
+
 ## Prerequisites
 
 - Docker + Docker Compose
