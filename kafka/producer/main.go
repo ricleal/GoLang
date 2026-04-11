@@ -31,9 +31,11 @@ var claimTypeList = []string{"auto", "home", "life"} //nolint:gochecknoglobals /
 func run() int {
 	broker := flag.String("broker", claims.BrokerAddr, "Kafka broker address")
 	workers := flag.Int("workers", claims.NumProducerWorkers, "Number of producer goroutines")
+	var logLevel slog.Level
+	flag.TextVar(&logLevel, "log-level", slog.LevelInfo, "log level (DEBUG, INFO, WARN, ERROR)")
 	flag.Parse()
 
-	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: logLevel}))
 
 	// Cancel the context on SIGINT/SIGTERM so all worker goroutines stop cleanly.
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

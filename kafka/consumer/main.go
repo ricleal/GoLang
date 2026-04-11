@@ -22,7 +22,7 @@ import (
 const statInterval = 5 * time.Second
 
 // topicFlag is a repeatable string flag: -topic claims-auto -topic claims-home.
-// It satisfies the flag.Value interface.
+// It satisfies the [flag.Value] interface.
 type topicFlag []string
 
 func (t *topicFlag) String() string     { return strings.Join(*t, ",") }
@@ -30,9 +30,11 @@ func (t *topicFlag) Set(v string) error { *t = append(*t, v); return nil }
 
 func run() int {
 	var topics topicFlag
+	var logLevel slog.Level
 	flag.Var(&topics, "topic", "Kafka topic to consume (repeatable; omit for all topics)")
 	broker := flag.String("broker", claims.BrokerAddr, "Kafka broker address")
 	groupID := flag.String("group", "", "Consumer group ID (default: derived from topics)")
+	flag.TextVar(&logLevel, "log-level", slog.LevelInfo, "log level (DEBUG, INFO, WARN, ERROR)")
 	flag.Parse()
 
 	// Default to all known topics when none are specified.
@@ -45,7 +47,7 @@ func run() int {
 		*groupID = "group-" + strings.Join(topics, "+")
 	}
 
-	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: logLevel}))
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
@@ -77,7 +79,7 @@ func run() int {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				fmt.Fprintf(os.Stdout, "── stats (group=%s)  %s\n", *groupID, st.tick())
+				logger.Info("stats", "group", *groupID, "snapshot", st.tick())
 			}
 		}
 	}()
@@ -95,7 +97,7 @@ func run() int {
 		}
 	}
 
-	fmt.Fprintf(os.Stdout, "\n── final stats (group=%s)  %s\n", *groupID, st.summary())
+	logger.Info("final stats", "group", *groupID, "snapshot", st.summary())
 	logger.Info("consumer stopped")
 	return 0
 }
