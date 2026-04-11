@@ -19,14 +19,20 @@ import (
 	"exp/kafka/claims"
 )
 
-func main() {
+const (
+	minAmount    = 100.0
+	amountRange  = 9900.0
+	maxCustomers = 1000
+)
+
+var claimTypeList = []string{"auto", "home", "life"} //nolint:gochecknoglobals // package-level constant list
+
+func run() int {
 	broker := flag.String("broker", claims.BrokerAddr, "Kafka broker address")
 	workers := flag.Int("workers", claims.NumProducerWorkers, "Number of producer goroutines")
 	flag.Parse()
 
-	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
-		Level: slog.LevelInfo,
-	})))
+	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
@@ -39,32 +45,33 @@ func main() {
 
 	sp, err := sarama.NewSyncProducer([]string{*broker}, cfg)
 	if err != nil {
-		slog.Error("create producer", "error", err)
-		os.Exit(1)
+		logger.Error("create producer", "error", err)
+		return 1
 	}
 	defer sp.Close()
 
-	slog.Info("producer started", "broker", *broker, "workers", *workers, "topics", claims.Topics)
+	logger.Info("producer started", "broker", *broker, "workers", *workers, "topics", claims.Topics)
 
 	var wg sync.WaitGroup
 	for i := range *workers {
-		wg.Add(1)
-		go func(id int) {
-			defer wg.Done()
-			work(ctx, sp, id)
-		}(i)
+		wg.Go(func() {
+			work(ctx, logger, sp, i)
+		})
 	}
 	wg.Wait()
-	slog.Info("producer stopped")
+	logger.Info("producer stopped")
+	return 0
 }
 
-var claimTypes = []string{"auto", "home", "life"}
+func main() {
+	os.Exit(run())
+}
 
-func work(ctx context.Context, sp sarama.SyncProducer, workerID int) {
+func work(ctx context.Context, logger *slog.Logger, sp sarama.SyncProducer, workerID int) {
 	for {
 		select {
 		case <-ctx.Done():
-			slog.Info("worker stopping", "worker", workerID)
+			logger.Info("worker stopping", "worker", workerID)
 			return
 		default:
 		}
@@ -74,7 +81,7 @@ func work(ctx context.Context, sp sarama.SyncProducer, workerID int) {
 
 		payload, err := json.Marshal(c)
 		if err != nil {
-			slog.Error("marshal", "error", err, "worker", workerID)
+			logger.Error("marshal", "error", err, "worker", workerID)
 			continue
 		}
 
@@ -84,13 +91,13 @@ func work(ctx context.Context, sp sarama.SyncProducer, workerID int) {
 			Value: sarama.ByteEncoder(payload),
 		}
 
-		partition, offset, err := sp.SendMessage(msg)
-		if err != nil {
-			slog.Error("send", "error", err, "worker", workerID)
+		partition, offset, sendErr := sp.SendMessage(msg)
+		if sendErr != nil {
+			logger.Error("send", "error", sendErr, "worker", workerID)
 			continue
 		}
 
-		slog.Debug("produced",
+		logger.Debug("produced",
 			"worker", workerID,
 			"topic", topic,
 			"partition", partition,
@@ -104,12 +111,12 @@ func work(ctx context.Context, sp sarama.SyncProducer, workerID int) {
 }
 
 func randomClaim() claims.Claim {
-	ct := claimTypes[rand.IntN(len(claimTypes))]
+	ct := claimTypeList[rand.IntN(len(claimTypeList))] //nolint:gosec // simulation data, crypto randomness not needed
 	return claims.Claim{
 		ID:         uuid.NewString(),
-		CustomerID: fmt.Sprintf("customer-%04d", rand.IntN(1000)+1),
+		CustomerID: fmt.Sprintf("customer-%04d", rand.IntN(maxCustomers)+1), //nolint:gosec // simulation data
 		ClaimType:  ct,
-		Amount:     100 + rand.Float64()*9900,
+		Amount:     minAmount + rand.Float64()*amountRange, //nolint:gosec // simulation data
 		Timestamp:  time.Now().UTC(),
 	}
 }
