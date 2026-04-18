@@ -8,6 +8,7 @@ const (
 	TopicAuto = "claims-auto" // topic for automobile insurance claims
 	TopicHome = "claims-home" // topic for home insurance claims
 	TopicLife = "claims-life" // topic for life insurance claims
+	TopicDLQ  = "claims-dlq"  // dead-letter topic for unprocessable messages
 
 	// NumProducerWorkers is the default number of concurrent producer goroutines.
 	NumProducerWorkers = 5

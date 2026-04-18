@@ -31,6 +31,7 @@ var claimTypeList = []string{"auto", "home", "life"} //nolint:gochecknoglobals /
 func run() int {
 	broker := flag.String("broker", claims.BrokerAddr, "Kafka broker address")
 	workers := flag.Int("workers", claims.NumProducerWorkers, "Number of producer goroutines")
+	poisonRate := flag.Float64("poison-rate", 0.0, "Fraction of messages sent with malformed JSON (0.0–1.0)")
 	var logLevel slog.Level
 	flag.TextVar(&logLevel, "log-level", slog.LevelInfo, "log level (DEBUG, INFO, WARN, ERROR)")
 	flag.Parse()
@@ -60,7 +61,7 @@ func run() int {
 	var wg sync.WaitGroup
 	for i := range *workers {
 		wg.Go(func() {
-			work(ctx, logger, sp, i)
+			work(ctx, logger, sp, i, *poisonRate)
 		})
 	}
 	wg.Wait()
@@ -74,7 +75,8 @@ func main() {
 
 // work runs a tight produce loop until ctx is cancelled. It generates a random
 // claim, marshals it to JSON, and sends it to the appropriate topic.
-func work(ctx context.Context, logger *slog.Logger, sp sarama.SyncProducer, workerID int) {
+// When poisonRate > 0, a random fraction of messages are sent as malformed JSON.
+func work(ctx context.Context, logger *slog.Logger, sp sarama.SyncProducer, workerID int, poisonRate float64) {
 	for {
 		// Non-blocking check so the worker exits promptly on shutdown.
 		select {
@@ -87,10 +89,17 @@ func work(ctx context.Context, logger *slog.Logger, sp sarama.SyncProducer, work
 		c := randomClaim()
 		topic := claims.TopicFor(c.ClaimType)
 
-		payload, err := json.Marshal(c)
-		if err != nil {
-			logger.Error("marshal", "error", err, "worker", workerID)
-			continue
+		var payload []byte
+		var err error
+		if poisonRate > 0 && rand.Float64() < poisonRate { //nolint:gosec // math/rand/v2 is fine for chaos
+			payload = []byte(`{"id":"` + c.ID + `",BROKEN_JSON`)
+			logger.Info("injecting poison pill", "worker", workerID, "topic", topic, "id", c.ID)
+		} else {
+			payload, err = json.Marshal(c)
+			if err != nil {
+				logger.Error("marshal", "error", err, "worker", workerID)
+				continue
+			}
 		}
 
 		msg := &sarama.ProducerMessage{

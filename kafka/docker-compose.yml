@@ -43,5 +43,6 @@ services:
         /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:29092 --create --topic claims-auto  --partitions 5 --replication-factor 1 --if-not-exists
         /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:29092 --create --topic claims-home  --partitions 5 --replication-factor 1 --if-not-exists
         /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:29092 --create --topic claims-life  --partitions 5 --replication-factor 1 --if-not-exists
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:29092 --create --topic claims-dlq   --partitions 1 --replication-factor 1 --if-not-exists
         echo "Topics created."
     restart: "no"

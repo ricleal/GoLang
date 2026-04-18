@@ -11,8 +11,9 @@ A hands-on experiment with Apache Kafka in Go. Demonstrates producers, consumers
 | `producer` | Publishes random insurance claims to Kafka topics |
 | `consumer` | Subscribes to one or more topics; prints live stats |
 | `inspector` | Displays per-partition offsets and consumer-group lag |
+| `dlq` | Reads and optionally replays messages from the dead-letter topic |
 
-**Topics**: `claims-auto`, `claims-home`, `claims-life` — 5 partitions each.  
+**Topics**: `claims-auto`, `claims-home`, `claims-life` — 5 partitions each. `claims-dlq` — 1 partition, dead-letter sink.  
 Messages are keyed by `CustomerID` (hash partitioner) so the same customer always
 hits the same partition, avoiding hot spots.
 
@@ -47,6 +48,7 @@ go run ./kafka/producer/
 |---|---|---|
 | `-broker` | `localhost:9092` | Kafka broker address |
 | `-workers` | `5` | Number of concurrent producer goroutines |
+| `-poison-rate` | `0.0` | Fraction of messages sent with malformed JSON to simulate poison pills |
 
 Press `Ctrl+C` to stop gracefully.
 
@@ -90,6 +92,9 @@ go run ./kafka/consumer/ -topic claims-auto -group workers  # second terminal
 | `-duckdb-path` | `/tmp` | DuckDB file path or directory; if directory, file is `<group>.duckdb` |
 | `-flush-interval` | `10s` | Flush buffered events to DuckDB every interval |
 | `-batch-size` | `1000` | Flush buffered events when this many are queued |
+| `-chaos-crash-after` | `0` | Crash the process after N messages (0 = disabled) |
+| `-chaos-fail-db-prob` | `0.0` | Probability (0–1) of a simulated DB flush failure per attempt |
+| `-chaos-slow-ms` | `0` | Artificial delay (ms) added per message (0 = disabled) |
 
 DuckDB allows one writer process per database file. Running multiple consumers is
 safe as long as each process writes to a different DuckDB file (the default
@@ -112,6 +117,25 @@ go run ./kafka/inspector/ -interval 3s
 
 Shows per-partition oldest/newest offsets and lag per consumer group.
 
+## Dead-Letter Queue (DLQ)
+
+Messages that cannot be processed (poison pills, permanent DB failures) are
+forwarded to `claims-dlq` with failure metadata in Kafka headers. The consumer
+retries a flush up to 3 times with exponential backoff before routing to the DLQ.
+
+```sh
+# Inspect all dead letters
+go run ./kafka/dlq/
+
+# Inspect and replay them back to their original topics
+go run ./kafka/dlq/ -replay
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `-broker` | `localhost:9092` | Kafka broker address |
+| `-replay` | `false` | Re-publish each dead letter to its original topic |
+
 ## Fault tolerance
 
 Stop the producer mid-run with `Ctrl+C`, then restart it:
@@ -124,6 +148,9 @@ Consumers resume from their **last committed offset** — no messages are lost. 
 the very first start, consumers begin at `OffsetNewest` (i.e. they skip messages
 produced before they joined). After that, committed offsets are used on every
 restart (at-least-once delivery semantics).
+
+See [FAILURES.md](FAILURES.md) for step-by-step instructions on simulating
+consumer crashes, database failures, poison pills, and slow consumers.
 
 ## Stop Kafka
 

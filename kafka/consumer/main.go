@@ -5,14 +5,17 @@ import (
 	"database/sql"
 	"database/sql/driver"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
+	"math/rand/v2"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -31,6 +34,12 @@ const (
 	defaultDBPath        = "/tmp"
 )
 
+const (
+	flushRetryTimeout  = 30 * time.Second
+	retryBaseBackoffMS = 500
+	maxFlushAttempts   = 3
+)
+
 // topicFlag is a repeatable string flag: -topic claims-auto -topic claims-home.
 // It satisfies the [flag.Value] interface.
 type topicFlag []string
@@ -45,8 +54,17 @@ func run() int {
 	broker := flag.String("broker", claims.BrokerAddr, "Kafka broker address")
 	groupID := flag.String("group", "", "Consumer group ID (default: derived from topics)")
 	dbPath := flag.String("duckdb-path", defaultDBPath, "DuckDB file path or directory")
-	flushInterval := flag.Duration("flush-interval", defaultFlushInterval, "How often to flush buffered events to DuckDB")
+	flushInterval := flag.Duration(
+		"flush-interval", defaultFlushInterval, "How often to flush buffered events to DuckDB",
+	)
 	batchSize := flag.Int("batch-size", defaultBatchSize, "Flush to DuckDB once this number of events is buffered")
+	chaosCrashAfter := flag.Int(
+		"chaos-crash-after", 0, "Crash the consumer after processing this many messages (0 = disabled)",
+	)
+	chaosFailDBProb := flag.Float64(
+		"chaos-fail-db-prob", 0.0, "Probability (0.0–1.0) that a flush attempt fails with a simulated DB error",
+	)
+	chaosSlowMS := flag.Int("chaos-slow-ms", 0, "Add this many ms of artificial delay per message (0 = disabled)")
 	flag.TextVar(&logLevel, "log-level", slog.LevelInfo, "log level (DEBUG, INFO, WARN, ERROR)")
 	flag.Parse()
 
@@ -75,30 +93,18 @@ func run() int {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
-	cfg := sarama.NewConfig()
-	// Start from the newest offset so new consumers don't replay old messages.
-	cfg.Consumer.Offsets.Initial = sarama.OffsetNewest
-	cfg.Consumer.Group.Rebalance.GroupStrategies = []sarama.BalanceStrategy{
-		sarama.NewBalanceStrategyRoundRobin(),
-	}
-
-	db, err := sql.Open("duckdb", resolvedDBPath)
+	db, err := setupDB(ctx, logger, resolvedDBPath)
 	if err != nil {
-		logger.Error("open duckdb", "error", err, "path", resolvedDBPath)
 		return 1
 	}
 	defer db.Close()
-	if err := ensureSchema(ctx, db); err != nil {
-		logger.Error("ensure duckdb schema", "error", err)
-		return 1
-	}
 
-	group, err := sarama.NewConsumerGroup([]string{*broker}, *groupID, cfg)
+	clients, err := newKafkaClients(logger, *broker, *groupID)
 	if err != nil {
-		logger.Error("create consumer group", "error", err)
 		return 1
 	}
-	defer group.Close()
+	defer clients.group.Close()
+	defer clients.dlqProducer.Close()
 
 	logger.Info("consumer started",
 		"broker", *broker,
@@ -107,34 +113,29 @@ func run() int {
 		"duckdb_path", resolvedDBPath,
 		"flush_interval", *flushInterval,
 		"batch_size", *batchSize,
+		"chaos_crash_after", *chaosCrashAfter,
+		"chaos_fail_db_prob", *chaosFailDBProb,
+		"chaos_slow_ms", *chaosSlowMS,
 	)
 
 	st := newStats()
 
-	// Background goroutine periodically prints a stats snapshot.
-	go func() {
-		ticker := time.NewTicker(statInterval)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				logger.Info("stats", "group", *groupID, "snapshot", st.tick())
-			}
-		}
-	}()
+	runStatsPrinter(ctx, logger, *groupID, st)
 
 	h := &handler{
-		stats:         st,
-		group:         *groupID,
-		logger:        logger,
-		db:            db,
-		flushInterval: *flushInterval,
-		batchSize:     *batchSize,
+		stats:           st,
+		group:           *groupID,
+		logger:          logger,
+		db:              db,
+		dlqProducer:     clients.dlqProducer,
+		flushInterval:   *flushInterval,
+		batchSize:       *batchSize,
+		chaosCrashAfter: *chaosCrashAfter,
+		chaosFailDBProb: *chaosFailDBProb,
+		chaosSlowMS:     *chaosSlowMS,
 	}
 	for {
-		if consumeErr := group.Consume(ctx, []string(topics), h); consumeErr != nil {
+		if consumeErr := clients.group.Consume(ctx, []string(topics), h); consumeErr != nil {
 			if ctx.Err() != nil {
 				break
 			}
@@ -150,6 +151,70 @@ func run() int {
 	return 0
 }
 
+// runStatsPrinter starts a goroutine that logs a stats snapshot on every statInterval
+// tick until ctx is cancelled.
+func runStatsPrinter(ctx context.Context, logger *slog.Logger, groupID string, st *stats) {
+	go func() {
+		ticker := time.NewTicker(statInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				logger.Info("stats", "group", groupID, "snapshot", st.tick())
+			}
+		}
+	}()
+}
+
+// setupDB opens the DuckDB database at path and ensures the schema exists.
+func setupDB(ctx context.Context, logger *slog.Logger, path string) (*sql.DB, error) {
+	db, err := sql.Open("duckdb", path)
+	if err != nil {
+		logger.Error("open duckdb", "error", err, "path", path)
+		return nil, err
+	}
+	if schemaErr := ensureSchema(ctx, db); schemaErr != nil {
+		_ = db.Close()
+		logger.Error("ensure duckdb schema", "error", schemaErr)
+		return nil, schemaErr
+	}
+	return db, nil
+}
+
+// kafkaClients groups the consumer group and DLQ producer used by run.
+type kafkaClients struct {
+	group       sarama.ConsumerGroup
+	dlqProducer sarama.SyncProducer
+}
+
+// newKafkaClients creates a consumer group and a DLQ sync producer.
+func newKafkaClients(logger *slog.Logger, broker, groupID string) (*kafkaClients, error) {
+	cfg := sarama.NewConfig()
+	cfg.Consumer.Offsets.Initial = sarama.OffsetNewest
+	cfg.Consumer.Group.Rebalance.GroupStrategies = []sarama.BalanceStrategy{
+		sarama.NewBalanceStrategyRoundRobin(),
+	}
+	group, err := sarama.NewConsumerGroup([]string{broker}, groupID, cfg)
+	if err != nil {
+		logger.Error("create consumer group", "error", err)
+		return nil, err
+	}
+	dlqCfg := sarama.NewConfig()
+	dlqCfg.Producer.Return.Successes = true
+	dlqCfg.Producer.Return.Errors = true
+	dlqProducer, err := sarama.NewSyncProducer([]string{broker}, dlqCfg)
+	if err != nil {
+		if closeErr := group.Close(); closeErr != nil {
+			logger.Warn("close consumer group after DLQ producer error", "error", closeErr)
+		}
+		logger.Error("create DLQ producer", "error", err)
+		return nil, err
+	}
+	return &kafkaClients{group: group, dlqProducer: dlqProducer}, nil
+}
+
 func main() {
 	os.Exit(run())
 }
@@ -159,12 +224,17 @@ func main() {
 // handler implements sarama.ConsumerGroupHandler. One instance is shared across
 // all topic/partition goroutines spawned by the consumer group.
 type handler struct {
-	stats         *stats
-	group         string
-	logger        *slog.Logger
-	db            *sql.DB
-	flushInterval time.Duration
-	batchSize     int
+	stats           *stats
+	group           string
+	logger          *slog.Logger
+	db              *sql.DB
+	dlqProducer     sarama.SyncProducer
+	flushInterval   time.Duration
+	batchSize       int
+	chaosCrashAfter int
+	chaosFailDBProb float64
+	chaosSlowMS     int
+	msgCount        atomic.Int64
 }
 
 // Setup is called at the start of each rebalance cycle.
@@ -182,46 +252,126 @@ func (h *handler) ConsumeClaim(session sarama.ConsumerGroupSession, claim sarama
 	batcher := newEventBatcher(h.db, h.group, h.batchSize)
 	ticker := time.NewTicker(h.flushInterval)
 	defer ticker.Stop()
-	flush := func(reason string) {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := batcher.flush(ctx, session); err != nil {
-			h.logger.Error("flush to duckdb", "error", err, "reason", reason, "pending", batcher.pending())
-		}
-	}
 
 	for {
 		select {
 		case msg, ok := <-claim.Messages():
 			if !ok {
-				flush("messages-closed")
+				h.retryFlush(batcher, session, "messages-closed")
 				return nil
 			}
-			var c claims.Claim
-			if err := json.Unmarshal(msg.Value, &c); err != nil {
-				h.logger.Error("unmarshal", "error", err)
-				session.MarkMessage(msg, "")
-				continue
-			}
-			h.stats.record(c)
-			batcher.add(consumedEvent{msg: msg, claim: c})
-			if batcher.pending() >= h.batchSize {
-				flush("batch-size")
-			}
-			h.logger.Debug("consumed",
-				"topic", msg.Topic,
-				"partition", msg.Partition,
-				"offset", msg.Offset,
-				"id", c.ID,
-				"type", c.ClaimType,
-				"amount", fmt.Sprintf("%.2f", c.Amount),
-			)
+			h.handleMessage(session, msg, batcher)
 		case <-ticker.C:
-			flush("timer")
+			h.retryFlush(batcher, session, "timer")
 		case <-session.Context().Done():
-			flush("session-done")
+			h.retryFlush(batcher, session, "session-done")
 			return nil
 		}
+	}
+}
+
+// handleMessage deserialises a single Kafka message, applies chaos hooks, records
+// stats, and triggers a flush when the batch is full.
+func (h *handler) handleMessage(
+	session sarama.ConsumerGroupSession,
+	msg *sarama.ConsumerMessage,
+	batcher *eventBatcher,
+) {
+	var c claims.Claim
+	if err := json.Unmarshal(msg.Value, &c); err != nil {
+		h.logger.Error("unmarshal (poison pill)", "error", err,
+			"topic", msg.Topic, "partition", msg.Partition, "offset", msg.Offset)
+		h.sendRawToDLQ(msg, "unmarshal-error: "+err.Error())
+		session.MarkMessage(msg, "dlq-poison-pill")
+		return
+	}
+	// Chaos: artificial slowdown to simulate a slow processing path.
+	if h.chaosSlowMS > 0 {
+		time.Sleep(time.Duration(h.chaosSlowMS) * time.Millisecond)
+	}
+	h.stats.record(c)
+	batcher.add(consumedEvent{msg: msg, claim: c})
+	if batcher.pending() >= h.batchSize {
+		h.retryFlush(batcher, session, "batch-size")
+	}
+	// Chaos: hard crash after N total messages to simulate an OOM-kill.
+	if h.chaosCrashAfter > 0 {
+		if n := h.msgCount.Add(1); n >= int64(h.chaosCrashAfter) {
+			h.logger.Error("chaos: crashing consumer",
+				"msg_count", n, "crash_after", h.chaosCrashAfter)
+			os.Exit(1)
+		}
+	}
+	h.logger.Debug("consumed",
+		"topic", msg.Topic,
+		"partition", msg.Partition,
+		"offset", msg.Offset,
+		"id", c.ID,
+		"type", c.ClaimType,
+		"amount", fmt.Sprintf("%.2f", c.Amount),
+	)
+}
+
+// retryFlush attempts the DuckDB flush up to maxFlushAttempts times with
+// exponential backoff. On permanent failure it drains the pending batch to the DLQ.
+func (h *handler) retryFlush(batcher *eventBatcher, session sarama.ConsumerGroupSession, reason string) {
+	ctx, cancel := context.WithTimeout(context.Background(), flushRetryTimeout)
+	defer cancel()
+	var lastErr error
+retryLoop:
+	for attempt := range maxFlushAttempts {
+		if attempt > 0 {
+			backoff := time.Duration(retryBaseBackoffMS<<uint(attempt)) * time.Millisecond
+			h.logger.Warn("flush retry", "attempt", attempt+1, "max", maxFlushAttempts, "backoff", backoff)
+			select {
+			case <-ctx.Done():
+				lastErr = ctx.Err()
+				break retryLoop
+			case <-time.After(backoff):
+			}
+		}
+		// Chaos: randomly return a fake DB error before attempting the real flush.
+		if h.chaosFailDBProb > 0 && rand.Float64() < h.chaosFailDBProb { //nolint:gosec // intentional: math/rand/v2 is sufficient for chaos
+			lastErr = errors.New("chaos: simulated database failure")
+			h.logger.Error("chaos: injected DB failure", "attempt", attempt+1, "pending", batcher.pending())
+			continue
+		}
+		lastErr = batcher.flush(ctx, session)
+		if lastErr == nil {
+			return
+		}
+		h.logger.Error("flush to duckdb", "error", lastErr, "reason", reason, "attempt", attempt+1)
+	}
+	if lastErr != nil {
+		h.logger.Error("all flush retries exhausted, routing to DLQ",
+			"pending", batcher.pending(), "error", lastErr)
+		batcher.drainToDLQ(h.dlqProducer, h.logger, session, lastErr)
+	}
+}
+
+// sendRawToDLQ forwards a single unprocessable Kafka message to the dead-letter
+// topic, attaching the original coordinates and failure reason as headers.
+func (h *handler) sendRawToDLQ(msg *sarama.ConsumerMessage, reason string) {
+	dlqMsg := &sarama.ProducerMessage{
+		Topic: claims.TopicDLQ,
+		Key:   sarama.ByteEncoder(msg.Key),
+		Value: sarama.ByteEncoder(msg.Value),
+		Headers: []sarama.RecordHeader{
+			{Key: []byte("dlq-original-topic"), Value: []byte(msg.Topic)},
+			{Key: []byte("dlq-original-partition"), Value: fmt.Appendf(nil, "%d", msg.Partition)},
+			{Key: []byte("dlq-original-offset"), Value: fmt.Appendf(nil, "%d", msg.Offset)},
+			{Key: []byte("dlq-consumer-group"), Value: []byte(h.group)},
+			{Key: []byte("dlq-error"), Value: []byte(reason)},
+			{Key: []byte("dlq-failed-at"), Value: []byte(time.Now().UTC().Format(time.RFC3339))},
+		},
+	}
+	if _, _, err := h.dlqProducer.SendMessage(dlqMsg); err != nil {
+		h.logger.Error("send to DLQ failed", "error", err,
+			"original_topic", msg.Topic, "original_offset", msg.Offset)
+	} else {
+		h.logger.Warn("message routed to DLQ",
+			"original_topic", msg.Topic, "original_partition", msg.Partition,
+			"original_offset", msg.Offset, "reason", reason)
 	}
 }
 
@@ -268,13 +418,13 @@ func (b *eventBatcher) flush(ctx context.Context, session sarama.ConsumerGroupSe
 		}
 
 		// go-duckdb Appender wraps DuckDB's native C appender API for efficient bulk inserts.
-		appender, err := duckdb.NewAppenderFromConn(rawConn, "", "claims_events")
-		if err != nil {
-			return err
+		appender, appErr := duckdb.NewAppenderFromConn(rawConn, "", "claims_events")
+		if appErr != nil {
+			return appErr
 		}
 
 		for _, ev := range b.events {
-			err = appender.AppendRow(
+			rowErr := appender.AppendRow(
 				ev.msg.Topic,
 				ev.msg.Partition,
 				ev.msg.Offset,
@@ -286,9 +436,9 @@ func (b *eventBatcher) flush(ctx context.Context, session sarama.ConsumerGroupSe
 				ev.claim.Timestamp,
 				now,
 			)
-			if err != nil {
+			if rowErr != nil {
 				_ = appender.Close()
-				return err
+				return rowErr
 			}
 		}
 
@@ -304,6 +454,45 @@ func (b *eventBatcher) flush(ctx context.Context, session sarama.ConsumerGroupSe
 	b.events = b.events[:0]
 
 	return nil
+}
+
+// drainToDLQ forwards every buffered event to the dead-letter topic, marks each
+// offset as committed, and clears the buffer. Called when all flush retries fail.
+func (b *eventBatcher) drainToDLQ(
+	producer sarama.SyncProducer,
+	logger *slog.Logger,
+	session sarama.ConsumerGroupSession,
+	reason error,
+) {
+	reasonStr := ""
+	if reason != nil {
+		reasonStr = reason.Error()
+	}
+	failedAt := time.Now().UTC().Format(time.RFC3339)
+	for _, ev := range b.events {
+		dlqMsg := &sarama.ProducerMessage{
+			Topic: claims.TopicDLQ,
+			Key:   sarama.ByteEncoder(ev.msg.Key),
+			Value: sarama.ByteEncoder(ev.msg.Value),
+			Headers: []sarama.RecordHeader{
+				{Key: []byte("dlq-original-topic"), Value: []byte(ev.msg.Topic)},
+				{Key: []byte("dlq-original-partition"), Value: fmt.Appendf(nil, "%d", ev.msg.Partition)},
+				{Key: []byte("dlq-original-offset"), Value: fmt.Appendf(nil, "%d", ev.msg.Offset)},
+				{Key: []byte("dlq-consumer-group"), Value: []byte(b.group)},
+				{Key: []byte("dlq-error"), Value: []byte(reasonStr)},
+				{Key: []byte("dlq-failed-at"), Value: []byte(failedAt)},
+			},
+		}
+		if _, _, err := producer.SendMessage(dlqMsg); err != nil {
+			logger.Error("drain to DLQ failed", "error", err,
+				"topic", ev.msg.Topic, "offset", ev.msg.Offset)
+		}
+		session.MarkMessage(ev.msg, "dlq-forwarded")
+	}
+	if n := len(b.events); n > 0 {
+		logger.Warn("batch drained to DLQ", "count", n, "reason", reasonStr)
+	}
+	b.events = b.events[:0]
 }
 
 func ensureSchema(ctx context.Context, db *sql.DB) error {
