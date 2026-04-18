@@ -87,6 +87,13 @@ go run ./kafka/consumer/ -topic claims-auto -group workers  # second terminal
 | `-topic` | all topics | Topic to subscribe to (repeatable) |
 | `-broker` | `localhost:9092` | Kafka broker address |
 | `-group` | derived from topics | Consumer group ID |
+| `-duckdb-path` | `/tmp` | DuckDB file path or directory; if directory, file is `<group>.duckdb` |
+| `-flush-interval` | `10s` | Flush buffered events to DuckDB every interval |
+| `-batch-size` | `1000` | Flush buffered events when this many are queued |
+
+DuckDB allows one writer process per database file. Running multiple consumers is
+safe as long as each process writes to a different DuckDB file (the default
+directory behavior does this automatically per consumer group).
 
 ## Inspector
 
