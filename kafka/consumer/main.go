@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"database/sql"
-	"database/sql/driver"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -20,7 +19,7 @@ import (
 	"time"
 
 	"github.com/IBM/sarama"
-	duckdb "github.com/marcboeker/go-duckdb"
+	_ "github.com/marcboeker/go-duckdb" // registers the "duckdb" sql driver
 
 	"exp/kafka/claims"
 )
@@ -249,7 +248,7 @@ func (h *handler) Cleanup(sarama.ConsumerGroupSession) error { return nil }
 // ConsumeClaim processes one partition claim until the session ends or the
 // messages channel is closed by the library.
 func (h *handler) ConsumeClaim(session sarama.ConsumerGroupSession, claim sarama.ConsumerGroupClaim) error {
-	batcher := newEventBatcher(h.db, h.group, h.batchSize)
+	batcher := newEventBatcher(h.db, h.logger, h.group, h.batchSize)
 	ticker := time.NewTicker(h.flushInterval)
 	defer ticker.Stop()
 
@@ -382,13 +381,20 @@ type consumedEvent struct {
 
 type eventBatcher struct {
 	db     *sql.DB
+	logger *slog.Logger
 	group  string
 	limit  int
 	events []consumedEvent
 }
 
-func newEventBatcher(db *sql.DB, group string, limit int) *eventBatcher {
-	return &eventBatcher{db: db, group: group, limit: limit, events: make([]consumedEvent, 0, limit)}
+func newEventBatcher(db *sql.DB, logger *slog.Logger, group string, limit int) *eventBatcher {
+	return &eventBatcher{
+		db:     db,
+		logger: logger,
+		group:  group,
+		limit:  limit,
+		events: make([]consumedEvent, 0, limit),
+	}
 }
 
 func (b *eventBatcher) add(ev consumedEvent) {
@@ -399,53 +405,65 @@ func (b *eventBatcher) pending() int {
 	return len(b.events)
 }
 
+// flush writes all buffered events to DuckDB inside a single transaction.
+// The INSERT uses ON CONFLICT DO NOTHING so re-delivered messages (at-least-once
+// re-delivery after a crash before the Kafka offset was committed) are silently
+// skipped rather than producing duplicates. Kafka offsets are only marked after
+// a successful commit, preserving at-least-once semantics end-to-end.
 func (b *eventBatcher) flush(ctx context.Context, session sarama.ConsumerGroupSession) error {
 	if len(b.events) == 0 {
 		return nil
 	}
 
-	conn, err := b.db.Conn(ctx)
+	tx, err := b.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
-	defer conn.Close()
+	defer func() { _ = tx.Rollback() }()
 
-	now := time.Now().UTC()
-	err = conn.Raw(func(driverConn any) error {
-		rawConn, ok := driverConn.(driver.Conn)
-		if !ok {
-			return fmt.Errorf("unexpected duckdb driver connection type: %T", driverConn)
-		}
+	const query = `
+		INSERT INTO claims_events
+			(topic, partition, message_offset, consumer_group,
+			 claim_id, customer_id, claim_type, amount, event_time, consumed_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT DO NOTHING`
 
-		// go-duckdb Appender wraps DuckDB's native C appender API for efficient bulk inserts.
-		appender, appErr := duckdb.NewAppenderFromConn(rawConn, "", "claims_events")
-		if appErr != nil {
-			return appErr
-		}
-
-		for _, ev := range b.events {
-			rowErr := appender.AppendRow(
-				ev.msg.Topic,
-				ev.msg.Partition,
-				ev.msg.Offset,
-				b.group,
-				ev.claim.ID,
-				ev.claim.CustomerID,
-				ev.claim.ClaimType,
-				ev.claim.Amount,
-				ev.claim.Timestamp,
-				now,
-			)
-			if rowErr != nil {
-				_ = appender.Close()
-				return rowErr
-			}
-		}
-
-		return appender.Close()
-	})
+	stmt, err := tx.PrepareContext(ctx, query)
 	if err != nil {
 		return err
+	}
+	defer stmt.Close()
+
+	now := time.Now().UTC()
+	skipped := 0
+	for _, ev := range b.events {
+		res, execErr := stmt.ExecContext(ctx,
+			ev.msg.Topic,
+			ev.msg.Partition,
+			ev.msg.Offset,
+			b.group,
+			ev.claim.ID,
+			ev.claim.CustomerID,
+			ev.claim.ClaimType,
+			ev.claim.Amount,
+			ev.claim.Timestamp,
+			now,
+		)
+		if execErr != nil {
+			return execErr
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			skipped++
+		}
+	}
+
+	if err = tx.Commit(); err != nil {
+		return err
+	}
+
+	if skipped > 0 {
+		b.logger.Warn("duplicate messages skipped (at-least-once re-delivery)",
+			"skipped", skipped, "total", len(b.events))
 	}
 
 	for _, ev := range b.events {
@@ -496,6 +514,12 @@ func (b *eventBatcher) drainToDLQ(
 }
 
 func ensureSchema(ctx context.Context, db *sql.DB) error {
+	// UNIQUE on (topic, partition, message_offset, consumer_group) is the
+	// idempotency key: if the consumer crashes after writing to DuckDB but
+	// before committing the Kafka offset, Kafka re-delivers those messages on
+	// restart. ON CONFLICT DO NOTHING in flush() then silently skips them.
+	// NOTE: if you have an existing DB without this constraint, delete the
+	// .duckdb file and let it be recreated (default path is /tmp).
 	_, err := db.ExecContext(ctx, `
 		CREATE TABLE IF NOT EXISTS claims_events (
 			topic TEXT NOT NULL,
@@ -507,7 +531,8 @@ func ensureSchema(ctx context.Context, db *sql.DB) error {
 			claim_type TEXT NOT NULL,
 			amount DOUBLE NOT NULL,
 			event_time TIMESTAMP NOT NULL,
-			consumed_at TIMESTAMP NOT NULL
+			consumed_at TIMESTAMP NOT NULL,
+			UNIQUE (topic, partition, message_offset, consumer_group)
 		)
 	`)
 	return err
