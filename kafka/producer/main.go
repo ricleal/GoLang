@@ -28,51 +28,6 @@ const (
 // claimTypeList drives random claim-type selection in randomClaim.
 var claimTypeList = []string{"auto", "home", "life"} //nolint:gochecknoglobals // package-level constant list
 
-func run() int {
-	broker := flag.String("broker", claims.BrokerAddr, "Kafka broker address")
-	workers := flag.Int("workers", claims.NumProducerWorkers, "Number of producer goroutines")
-	poisonRate := flag.Float64("poison-rate", 0.0, "Fraction of messages sent with malformed JSON (0.0–1.0)")
-	var logLevel slog.Level
-	flag.TextVar(&logLevel, "log-level", slog.LevelInfo, "log level (DEBUG, INFO, WARN, ERROR)")
-	flag.Parse()
-
-	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: logLevel}))
-
-	// Cancel the context on SIGINT/SIGTERM so all worker goroutines stop cleanly.
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer cancel()
-
-	cfg := sarama.NewConfig()
-	cfg.Producer.Return.Successes = true
-	cfg.Producer.Return.Errors = true
-	// Hash partitioner: same CustomerID → same partition, avoiding hot spots.
-	cfg.Producer.Partitioner = sarama.NewHashPartitioner
-
-	sp, err := sarama.NewSyncProducer([]string{*broker}, cfg)
-	if err != nil {
-		logger.Error("create producer", "error", err)
-		return 1
-	}
-	defer sp.Close()
-
-	logger.Info("producer started", "broker", *broker, "workers", *workers, "topics", claims.Topics)
-
-	// wg.Go launches each worker and wg.Wait blocks until all return.
-	var wg sync.WaitGroup
-	for i := range *workers {
-		wg.Go(func() {
-			work(ctx, logger, sp, i, *poisonRate)
-		})
-	}
-	wg.Wait()
-	logger.Info("producer stopped")
-	return 0
-}
-
-func main() {
-	os.Exit(run())
-}
-
 // work runs a tight produce loop until ctx is cancelled. It generates a random
 // claim, marshals it to JSON, and sends it to the appropriate topic.
 // When poisonRate > 0, a random fraction of messages are sent as malformed JSON.
@@ -137,4 +92,49 @@ func randomClaim() claims.Claim {
 		Amount:     minAmount + rand.Float64()*amountRange, //nolint:gosec // simulation data
 		Timestamp:  time.Now().UTC(),
 	}
+}
+
+func run() int {
+	broker := flag.String("broker", claims.BrokerAddr, "Kafka broker address")
+	workers := flag.Int("workers", claims.NumProducerWorkers, "Number of producer goroutines")
+	poisonRate := flag.Float64("poison-rate", 0.0, "Fraction of messages sent with malformed JSON (0.0–1.0)")
+	var logLevel slog.Level
+	flag.TextVar(&logLevel, "log-level", slog.LevelInfo, "log level (DEBUG, INFO, WARN, ERROR)")
+	flag.Parse()
+
+	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: logLevel}))
+
+	// Cancel the context on SIGINT/SIGTERM so all worker goroutines stop cleanly.
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+
+	cfg := sarama.NewConfig()
+	cfg.Producer.Return.Successes = true
+	cfg.Producer.Return.Errors = true
+	// Hash partitioner: same CustomerID → same partition, avoiding hot spots.
+	cfg.Producer.Partitioner = sarama.NewHashPartitioner
+
+	sp, err := sarama.NewSyncProducer([]string{*broker}, cfg)
+	if err != nil {
+		logger.Error("create producer", "error", err)
+		return 1
+	}
+	defer sp.Close()
+
+	logger.Info("producer started", "broker", *broker, "workers", *workers, "topics", claims.Topics)
+
+	// wg.Go launches each worker and wg.Wait blocks until all return.
+	var wg sync.WaitGroup
+	for i := range *workers {
+		wg.Go(func() {
+			work(ctx, logger, sp, i, *poisonRate)
+		})
+	}
+	wg.Wait()
+	logger.Info("producer stopped")
+	return 0
+}
+
+func main() {
+	os.Exit(run())
 }

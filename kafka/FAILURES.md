@@ -59,9 +59,9 @@ go run ./kafka/dlq/   # should print "claims-dlq is empty"
 ## Scenario 2 — Database Failure with DLQ Fallback
 
 **What happens**: The consumer simulates a DB failure on every flush attempt
-(100% probability). After 3 retries with exponential backoff (1 s, 2 s, 4 s),
-the in-flight batch is forwarded to `claims-dlq` and offsets are committed so
-the consumer keeps moving.
+(100% probability). After 3 total attempts (initial + 2 retries) with
+exponential backoff (1 s, 2 s), the in-flight batch is forwarded to
+`claims-dlq` and offsets are committed so the consumer keeps moving.
 
 ### Step by step
 
