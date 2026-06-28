@@ -1,0 +1,43 @@
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  server-1:
+    build:
+      context: ..
+      dockerfile: real_time_metrics_agg/Dockerfile
+    command: ["/server", "--port=50051", "--node-id=node-1", "--redis=redis:6379"]
+    ports:
+      - "50051:50051"
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  server-2:
+    build:
+      context: ..
+      dockerfile: real_time_metrics_agg/Dockerfile
+    command: ["/server", "--port=50052", "--node-id=node-2", "--redis=redis:6379"]
+    ports:
+      - "50052:50052"
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  server-3:
+    build:
+      context: ..
+      dockerfile: real_time_metrics_agg/Dockerfile
+    command: ["/server", "--port=50053", "--node-id=node-3", "--redis=redis:6379"]
+    ports:
+      - "50053:50053"
+    depends_on:
+      redis:
+        condition: service_healthy

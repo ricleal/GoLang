@@ -1,0 +1,29 @@
+syntax = "proto3";
+
+package metrics;
+
+option go_package = "exp/real_time_metrics_agg/gen";
+
+// MetricsService exposes a bidirectional streaming RPC so clients can
+// continuously push metric events and receive threshold alerts.
+service MetricsService {
+  rpc StreamMetrics(stream MetricEvent) returns (stream Alert);
+}
+
+// MetricEvent is one data point sent by a client node.
+message MetricEvent {
+  string node_id      = 1; // originating client identifier
+  string metric_name  = 2; // e.g. "cpu", "network", "requests"
+  double value        = 3;
+  int64  timestamp_ms = 4;
+  int64  seq          = 5; // monotonic sequence for deduplication on reconnect
+}
+
+// Alert is pushed by the server when a sliding-window average exceeds its threshold.
+message Alert {
+  string metric_name  = 1;
+  double average      = 2;
+  double threshold    = 3;
+  string message      = 4;
+  int64  timestamp_ms = 5;
+}
