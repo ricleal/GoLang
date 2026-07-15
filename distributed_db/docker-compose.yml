@@ -1,0 +1,109 @@
+services:
+  cassandra-1:
+    image: cassandra:4.1
+    container_name: cassandra-1
+    hostname: cassandra-1
+    ports:
+      - "9042:9042"
+    environment:
+      CASSANDRA_CLUSTER_NAME: TestCluster
+      CASSANDRA_ENDPOINT_SNITCH: GossipingPropertyFileSnitch
+      CASSANDRA_DC: datacenter1
+      CASSANDRA_RACK: rack1
+      CASSANDRA_SEEDS: cassandra-1
+    volumes:
+      - cassandra-1-data:/var/lib/cassandra
+    healthcheck:
+      test: ["CMD-SHELL", "nodetool status | grep -E '^UN' | wc -l | grep -q '^[1-9]'"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 60s
+    networks:
+      - cassandra-net
+
+  cassandra-2:
+    image: cassandra:4.1
+    container_name: cassandra-2
+    hostname: cassandra-2
+    ports:
+      - "9043:9042"
+    # Cassandra's own "nodetool status shows UN" healthcheck can report
+    # healthy slightly before the node's token commitment has fully
+    # propagated through gossip to the rest of the cluster. A short startup
+    # delay on top of depends_on gives gossip real time to settle before
+    # this node's vnode token allocator runs, reducing the chance of a
+    # bootstrap token/address collision with the node that joins after it.
+    entrypoint:
+      - bash
+      - -c
+      - sleep 45 && docker-entrypoint.sh cassandra -f
+    environment:
+      CASSANDRA_CLUSTER_NAME: TestCluster
+      CASSANDRA_ENDPOINT_SNITCH: GossipingPropertyFileSnitch
+      CASSANDRA_DC: datacenter1
+      CASSANDRA_RACK: rack1
+      CASSANDRA_SEEDS: cassandra-1
+    volumes:
+      - cassandra-2-data:/var/lib/cassandra
+    depends_on:
+      cassandra-1:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "nodetool status | grep -E '^UN' | wc -l | grep -q '^[1-9]'"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 60s
+    networks:
+      - cassandra-net
+
+  cassandra-3:
+    image: cassandra:4.1
+    container_name: cassandra-3
+    hostname: cassandra-3
+    ports:
+      - "9044:9042"
+    # See the cassandra-2 comment above: depends_on alone isn't a strong
+    # enough guarantee that gossip has converged, so this node also waits
+    # out a fixed delay (longer than cassandra-2's, since it's now the
+    # third node joining a live ring) before actually starting Cassandra.
+    entrypoint:
+      - bash
+      - -c
+      - sleep 120 && docker-entrypoint.sh cassandra -f
+    environment:
+      CASSANDRA_CLUSTER_NAME: TestCluster
+      CASSANDRA_ENDPOINT_SNITCH: GossipingPropertyFileSnitch
+      CASSANDRA_DC: datacenter1
+      CASSANDRA_RACK: rack1
+      CASSANDRA_SEEDS: cassandra-1
+    volumes:
+      - cassandra-3-data:/var/lib/cassandra
+    depends_on:
+      cassandra-1:
+        condition: service_healthy
+      # Wait for cassandra-2 to fully join before bootstrapping cassandra-3.
+      # If both non-seed nodes join concurrently, they can race the vnode
+      # token allocator before gossip converges and pick colliding tokens,
+      # crashing one of them with "Bootstrap Token collision". Chaining the
+      # startup (1 -> 2 -> 3) serializes the joins and avoids the race.
+      cassandra-2:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "nodetool status | grep -E '^UN' | wc -l | grep -q '^[1-9]'"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 60s
+    networks:
+      - cassandra-net
+
+networks:
+  cassandra-net:
+    driver: bridge
+
+volumes:
+  cassandra-1-data:
+  cassandra-2-data:
+  cassandra-3-data:
