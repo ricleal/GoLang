@@ -1,0 +1,381 @@
+# Kafka-less CDC stand: Postgres -> Debezium (server + iceberg sink) -> Iceberg
+# on MinIO, cataloged by Lakekeeper (backed by a meta Postgres). The Go
+# services (datagen, dq-runner, verify) replace the Python ones of the
+# original debezium-iceberg-lab.
+#
+# Every image tag is pinned to a concrete release (no `latest`): `latest` moves
+# under our feet and breaks the stand silently. Bump deliberately and re-verify.
+name: debezium-stream
+
+volumes:
+  minio-data:
+  meta-pg-data:
+  source-pg-data:
+
+services:
+  # ---- catalog infrastructure ----
+
+  # postgres-meta: internal Postgres that holds Lakekeeper's catalog state and
+  # Marquez's database. Why: a REST catalog needs a transactional store, and
+  # sharing one small PG keeps the stand compact. Used by lakekeeper (catalog
+  # state) and marquez (its own DB, created by postgres-meta/init/01-marquez.sql).
+  postgres-meta:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: ${META_PG_USER:-lakekeeper}
+      POSTGRES_PASSWORD: ${META_PG_PASSWORD:-lakekeeper}
+      POSTGRES_DB: lakekeeper
+    volumes:
+      - meta-pg-data:/var/lib/postgresql/data
+      - ./postgres-meta/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      # $POSTGRES_USER is the container env var (META_PG_USER is compose-side only)
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d lakekeeper"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # minio: S3-compatible object storage - the entire Iceberg lake (parquet data
+  # files, manifests, manifest-lists, metadata.json) lives in its `warehouse`
+  # bucket. Why: Iceberg is a table format on object storage, and MinIO gives a
+  # local, inspectable S3 (console :9001) so no cloud account is needed. Used by
+  # debezium (writes), lakekeeper, dq-runner and the notebooks.
+  minio:
+    image: minio/minio:RELEASE.2025-09-07T16-13-09Z
+    profiles: [core]
+    command: ["server", "--console-address", ":9001", "/data"]
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minio}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minio12345}
+    volumes:
+      - minio-data:/data
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 10s
+      retries: 10
+      start_period: 15s
+
+  # minio-init: one-shot job that creates the `warehouse` bucket once MinIO is
+  # healthy. Why: lakekeeper and debezium fail if the bucket is missing. It uses
+  # the minio image's `mc` client against the running server.
+  minio-init:
+    image: minio/minio:RELEASE.2025-09-07T16-13-09Z
+    profiles: [core]
+    depends_on:
+      minio:
+        condition: service_healthy
+    restart: "no"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minio}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minio12345}
+    entrypoint: >
+      /bin/sh -c "
+      /usr/bin/mc alias set local http://minio:9000 $${MINIO_ROOT_USER} $${MINIO_ROOT_PASSWORD} &&
+      /usr/bin/mc mb --ignore-existing local/warehouse
+      "
+
+  # lakekeeper-migrate: runs the Lakekeeper DB schema migrations against
+  # postgres-meta before the catalog server starts. Why: the catalog cannot
+  # serve until its Postgres schema exists; depends_on makes this run first.
+  lakekeeper-migrate:
+    image: quay.io/lakekeeper/catalog:v0.13.1
+    profiles: [core]
+    restart: "no"
+    command: ["migrate"]
+    environment:
+      LAKEKEEPER__PG_ENCRYPTION_KEY: insecure-dev-only-key
+      LAKEKEEPER__PG_DATABASE_URL_READ: postgresql://${META_PG_USER:-lakekeeper}:${META_PG_PASSWORD:-lakekeeper}@postgres-meta:5432/lakekeeper
+      LAKEKEEPER__PG_DATABASE_URL_WRITE: postgresql://${META_PG_USER:-lakekeeper}:${META_PG_PASSWORD:-lakekeeper}@postgres-meta:5432/lakekeeper
+    depends_on:
+      postgres-meta:
+        condition: service_healthy
+
+  # lakekeeper: the Iceberg REST catalog - the single source of truth that maps
+  # table names (e.g. cdc.dbz_inventory_customers) to their current metadata.
+  # Why: every client (debezium sink, iceberg-go in dq-runner, the notebooks)
+  # speaks the same REST protocol, so no client guesses file paths. Its state
+  # lives in postgres-meta; its storage profile points at the MinIO warehouse.
+  lakekeeper:
+    image: quay.io/lakekeeper/catalog:v0.13.1
+    profiles: [core]
+    command: ["serve"]
+    environment:
+      LAKEKEEPER__PG_ENCRYPTION_KEY: insecure-dev-only-key
+      LAKEKEEPER__PG_DATABASE_URL_READ: postgresql://${META_PG_USER:-lakekeeper}:${META_PG_PASSWORD:-lakekeeper}@postgres-meta:5432/lakekeeper
+      LAKEKEEPER__PG_DATABASE_URL_WRITE: postgresql://${META_PG_USER:-lakekeeper}:${META_PG_PASSWORD:-lakekeeper}@postgres-meta:5432/lakekeeper
+    ports:
+      - "8181:8181"
+    healthcheck:
+      test: ["CMD", "/home/nonroot/lakekeeper", "healthcheck"]
+      interval: 3s
+      timeout: 10s
+      retries: 10
+      start_period: 5s
+    depends_on:
+      lakekeeper-migrate:
+        condition: service_completed_successfully
+      minio-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  # lakekeeper-bootstrap: one-shot curl that accepts Lakekeeper's terms of use
+  # via the management API. Why: the catalog refuses to create warehouses until
+  # the ToU are accepted; done once at startup.
+  lakekeeper-bootstrap:
+    image: curlimages/curl:8.21.0
+    profiles: [core]
+    restart: "no"
+    depends_on:
+      lakekeeper:
+        condition: service_healthy
+    command:
+      - -s
+      - -X
+      - POST
+      - http://lakekeeper:8181/management/v1/bootstrap
+      - -H
+      - "Content-Type: application/json"
+      - --data
+      - '{"accept-terms-of-use": true}'
+
+  # lakekeeper-init-warehouse: one-shot curl that registers the `lakehouse`
+  # warehouse (bucket/prefix/endpoint from lakekeeper/create-warehouse.json).
+  # Why: debezium needs a warehouse to exist before its first commit.
+  lakekeeper-init-warehouse:
+    image: curlimages/curl:8.21.0
+    profiles: [core]
+    restart: "no"
+    depends_on:
+      lakekeeper-bootstrap:
+        condition: service_completed_successfully
+    volumes:
+      - ./lakekeeper/create-warehouse.json:/home/curl_user/create-warehouse.json:ro
+    command:
+      - -s
+      - -X
+      - POST
+      - http://lakekeeper:8181/management/v1/warehouse
+      - -H
+      - "Content-Type: application/json"
+      - --data
+      - "@create-warehouse.json"
+
+  # ---- CDC source ----
+
+  postgres-source:
+    # Debezium 3.6 example image: seeds the `inventory` schema. Pinned to the
+    # release matching the Debezium server bundled in the memiiso image.
+    image: quay.io/debezium/example-postgres:3.6
+    profiles: [core]
+    environment:
+      POSTGRES_USER: ${SOURCE_PG_USER:-postgres}
+      POSTGRES_PASSWORD: ${SOURCE_PG_PASSWORD:-postgres}
+    volumes:
+      - source-pg-data:/var/lib/postgresql
+    ports:
+      - "5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # datagen (Go): continuous CRUD generator for the `inventory` schema. Why: a
+  # CDC pipeline with no writes produces no WAL events, no snapshots and no
+  # metrics movement - datagen keeps the stream alive so the freshness check
+  # and reconciliation always have fresh data. Writes SQL to postgres-source
+  # only; changes reach the lake indirectly through debezium.
+  datagen:
+    build:
+      context: .
+      dockerfile: datagen/Dockerfile
+    profiles: [core]
+    environment:
+      DATAGEN_DSN: postgresql://${SOURCE_PG_USER:-postgres}:${SOURCE_PG_PASSWORD:-postgres}@postgres-source:5432/postgres
+      DATAGEN_INTERVAL_SECONDS: ${DATAGEN_INTERVAL_SECONDS:-2}
+    depends_on:
+      postgres-source:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # debezium: Debezium Server + Iceberg sink - the CDC engine of the stand. It
+  # decodes the Postgres WAL, batches events (up to 30s/2048) and commits them
+  # to Iceberg through lakekeeper, writing parquet + metadata to MinIO and its
+  # own offsets into the lake. Why: this is the Kafka-less core of the lab.
+  # Pinned to 1.0.0.Final: the upstream 1.1.0.Final/latest tags on ghcr.io are
+  # documented as broken - don't bump without verifying `docker pull`.
+  debezium:
+    image: ghcr.io/memiiso/debezium-server-iceberg:1.0.0.Final
+    platform: linux/amd64
+    profiles: [core]
+    environment:
+      AWS_REGION: local-01
+      JMX_EXPORTER_PORT: "9404"
+    volumes:
+      - ./debezium/application.properties:/debezium/config/application.properties:ro
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres-source:
+        condition: service_healthy
+      lakekeeper-init-warehouse:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  # ---- verification (integration tests + maintenance) ----
+
+  # verify (Go): runs the stand-level integration tests (`integration.test`),
+  # i.e. `make verify`; also hosts `dq maintain` for `make maintain`. Why: it
+  # turns "is the whole stand healthy?" into a repeatable command. It reads the
+  # same DQ_* env as dq-runner and asserts against prometheus/grafana/marquez.
+  verify:
+    build:
+      context: .
+      dockerfile: dq/Dockerfile
+    profiles: [verify]
+    command: ["integration.test", "-test.v"]
+    environment:
+      DQ_PG_DSN: postgresql://${SOURCE_PG_USER:-postgres}:${SOURCE_PG_PASSWORD:-postgres}@postgres-source:5432/postgres
+      DQ_ICEBERG_URI: http://lakekeeper:8181/catalog
+      DQ_ICEBERG_WAREHOUSE: lakehouse
+      DQ_ICEBERG_NAMESPACE: cdc
+      DQ_TOPIC_PREFIX: dbz
+      DQ_S3_ENDPOINT: http://minio:9000
+      DQ_S3_KEY: ${MINIO_ROOT_USER:-minio}
+      DQ_S3_SECRET: ${MINIO_ROOT_PASSWORD:-minio12345}
+      DQ_S3_REGION: local-01
+      DQ_TABLES: inventory.customers,inventory.products,inventory.products_on_hand,inventory.orders
+      DQ_ROWCOUNT_TOLERANCE: ${DQ_ROWCOUNT_TOLERANCE:-25}
+      MAINT_MAX_AGE_HOURS: ${MAINT_MAX_AGE_HOURS:-2}
+      MAINT_RETAIN_LAST: ${MAINT_RETAIN_LAST:-20}
+
+  # ---- data-quality runner ----
+
+  # dq-runner (Go): the data-quality loop. Every DQ_INTERVAL_SECONDS it
+  # reconciles Postgres vs Iceberg (rowcount, freshness, duplicates, keys,
+  # nulls) and exposes dq_* gauges on :8000/metrics for Prometheus; it also
+  # sends OpenLineage events to Marquez. Why: turns "is the lake healthy?" into
+  # numbers Grafana can plot. Reads postgres-source + lakekeeper + minio.
+  dq-runner:
+    build:
+      context: .
+      dockerfile: dq/Dockerfile
+    profiles: [observability]
+    command: ["dq", "run"]
+    environment:
+      DQ_PG_DSN: postgresql://${SOURCE_PG_USER:-postgres}:${SOURCE_PG_PASSWORD:-postgres}@postgres-source:5432/postgres
+      DQ_ICEBERG_URI: http://lakekeeper:8181/catalog
+      DQ_ICEBERG_WAREHOUSE: lakehouse
+      DQ_ICEBERG_NAMESPACE: cdc
+      DQ_TOPIC_PREFIX: dbz
+      DQ_S3_ENDPOINT: http://minio:9000
+      DQ_S3_KEY: ${MINIO_ROOT_USER:-minio}
+      DQ_S3_SECRET: ${MINIO_ROOT_PASSWORD:-minio12345}
+      DQ_S3_REGION: local-01
+      DQ_TABLES: inventory.customers,inventory.products,inventory.products_on_hand,inventory.orders
+      DQ_INTERVAL_SECONDS: ${DQ_INTERVAL_SECONDS:-30}
+      DQ_ROWCOUNT_TOLERANCE: ${DQ_ROWCOUNT_TOLERANCE:-25}
+      DQ_FRESHNESS_MAX_SECONDS: ${DQ_FRESHNESS_MAX_SECONDS:-120}
+      DQ_NULL_CHECKS: ${DQ_NULL_CHECKS:-inventory.customers:email}
+      OPENLINEAGE_URL: http://marquez:5000
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres-source:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ---- observability ----
+
+  # prometheus: time-series store scraping dq-runner (:8000) and debezium
+  # (/q/metrics + JMX :9404). Why: DQ checks and connector metrics only become
+  # useful over time; Prometheus is the datasource for the Grafana dashboard.
+  prometheus:
+    image: prom/prometheus:v3.13.2
+    profiles: [observability]
+    volumes:
+      - ./observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+    restart: unless-stopped
+
+  # grafana: dashboard for the stand ("CDC Stand", uid cdc-stand), provisioned
+  # from observability/grafana. Why: visualizes the dq_* gauges and Debezium
+  # metrics so the failure scenarios are visible at a glance.
+  grafana:
+    image: grafana/grafana:13.0.6
+    profiles: [observability]
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+    volumes:
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
+  # marquez: OpenLineage server recording every DQ cycle (inputs = Postgres
+  # tables, outputs = Iceberg tables) under namespace cdc-stand / job dq_check.
+  # Why: data lineage is the audit trail of the checks; Debezium's own
+  # OpenLineage is unavailable in the memiiso build, so dq-runner is the
+  # lineage source. State lives in postgres-meta (marquez DB).
+  marquez:
+    image: marquezproject/marquez:0.51.1
+    profiles: [observability]
+    environment:
+      POSTGRES_HOST: postgres-meta
+      POSTGRES_PORT: "5432"
+      SEARCH_ENABLED: "false"
+    ports:
+      - "5002:5000"
+    healthcheck:
+      # dropwizard admin port; the web UI must not start before migrations finish
+      test: ["CMD", "curl", "-f", "http://localhost:5001/healthcheck"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+    depends_on:
+      postgres-meta:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # marquez-web: web UI for the lineage store (http://localhost:3001). Why:
+  # makes lineage browsable without calling the API directly.
+  marquez-web:
+    image: marquezproject/marquez-web:0.51.1
+    profiles: [observability]
+    environment:
+      MARQUEZ_HOST: marquez
+      MARQUEZ_PORT: "5000"
+      WEB_PORT: "3001"
+    ports:
+      - "3001:3001"
+    depends_on:
+      marquez:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ---- analysis (GoNB notebooks) ----
+
+  # jupyter: JupyterLab with the GoNB Go kernel, serving the analysis notebooks
+  # (notebooks/ mounted at /notebooks/work, token `lake`). Why: the lab's
+  # walkthroughs (metadata, querying, CDC semantics, dedup, failure cases) are
+  # written in Go and reuse the same iceberg-go/pgx code as the services - one
+  # language across the whole repo. Reads lakekeeper + minio + postgres-source.
+  jupyter:
+    build: ./jupyter
+    profiles: [analysis]
+    environment:
+      JUPYTER_TOKEN: lake
+    volumes:
+      - ./notebooks:/notebooks/work
+    ports:
+      - "8888:8888"
+    restart: unless-stopped

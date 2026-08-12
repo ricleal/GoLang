@@ -1,0 +1,17 @@
+# Build context is the repo root so the Dockerfiles can resolve go.mod/go.sum.
+
+# never ship source control or the analysis/docs layers into the service images
+.git
+.env
+.vscode
+notebooks/
+jupyter/
+observability/
+postgres-meta/
+lakekeeper/
+debezium/
+docs/
+README.md
+ARCHITECTURE.md
+Makefile
+docker-compose.yaml

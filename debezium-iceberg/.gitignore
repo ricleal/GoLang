@@ -1,0 +1,12 @@
+.env
+.ipynb_checkpoints/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# sdd scratch
+.superpowers/
+
+.vscode
+
+docs/superpowers

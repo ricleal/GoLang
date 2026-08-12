@@ -1,0 +1,16 @@
+global:
+  scrape_interval: 10s
+
+scrape_configs:
+  - job_name: debezium-quarkus
+    metrics_path: /q/metrics
+    static_configs:
+      - targets: ["debezium:8080"]
+  - job_name: debezium-connector
+    static_configs:
+      - targets: ["debezium:9404"]
+  - job_name: dq-runner
+    static_configs:
+      - targets: ["dq-runner:8000"]
+  # lakekeeper:9000 was scraped too, but nothing on the dashboard or in the
+  # tests ever read those series — dropped rather than left as decoration
