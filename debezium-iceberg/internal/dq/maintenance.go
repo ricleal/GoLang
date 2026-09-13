@@ -46,7 +46,7 @@ func Maintain(ctx context.Context, cfg *Config) error {
 }
 
 func maintainTable(ctx context.Context, cat catalog.Catalog, ident table.Identifier, cfg *Config) error {
-	tbl, err := cat.LoadTable(ctx, ident)
+	tbl, err := loadTable(ctx, cfg, cat, ident)
 	if err != nil {
 		return err
 	}
@@ -77,7 +77,7 @@ func maintainTable(ctx context.Context, cat catalog.Catalog, ident table.Identif
 		return err
 	}
 
-	reloaded, err := cat.LoadTable(ctx, ident)
+	reloaded, err := loadTable(ctx, cfg, cat, ident)
 	if err != nil {
 		return err
 	}

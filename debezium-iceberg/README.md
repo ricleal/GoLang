@@ -35,6 +35,12 @@ flowchart LR
 
 ## Quick start (layered)
 
+`make help` lists every target with a one-line description. The two big
+decisions are *containerised* (everything in docker compose, default) vs
+*local* (`go run` on the host, for iterating on the Go source).
+
+### Containerised (default)
+
 ```console
 make up-core       # core: postgres, minio, lakekeeper, debezium, datagen
 make verify        # core smoke tests (needs the stand up)
@@ -42,9 +48,39 @@ make verify-unit   # pure check functions only, no stand needed
 make up-analysis   # + jupyter with GoNB notebooks
 make up-obs        # + prometheus, grafana, dq-runner, marquez
 make up-all        # everything: core + analysis + observability
+make maintain      # expire old Iceberg snapshots (dq maintain, in a container)
 make down          # stop everything
 make clean         # stop and remove data (volumes)
 ```
+
+### Local (host) runs
+
+Same Go code, run with `go run` instead of a container — no image rebuilds
+while you iterate. They need the core stack up (`make up-core`).
+
+```console
+make run-datagen   # CRUD generator on the host -> postgres (localhost:5433)
+make run-dq        # DQ loop on the host -> metrics at http://localhost:8000/metrics
+make run-maintain  # snapshot expiry on the host (dq maintain)
+```
+
+No `/etc/hosts` edits or sudo needed. Lakekeeper advertises the in-network S3
+endpoint (`http://minio:9000`) in its table config — that name only resolves
+inside the compose network. The local targets set `DQ_S3_ENDPOINT_OVERRIDE`
+(which the dq client applies to its table I/O), so the host run reaches the
+published MinIO port (`localhost:9000`) with the static MinIO credentials
+instead. Container runs leave the override empty and keep Lakekeeper's vended
+STS credentials.
+
+### Tests / checks
+
+```console
+make test          # go test ./internal/dq/... (fast, no stack needed)
+make verify-unit   # alias of `test`
+make lint          # go vet ./...
+```
+
+### Where to look
 
 ## Where to look
 
@@ -111,7 +147,8 @@ you (runs the baked `integration.test` binary in the compose `verify` service).
 ## Table maintenance
 
 ```console
-make maintain    # expire old snapshots + auto-trim metadata.json
+make maintain      # in a container (needs the stand up)
+make run-maintain  # same job on the host (needs `make up-core`)
 ```
 
 Thresholds — env: `MAINT_MAX_AGE_HOURS` (2h), `MAINT_RETAIN_LAST` (20). The sink

@@ -11,6 +11,7 @@ import (
 	"github.com/apache/iceberg-go"
 	"github.com/apache/iceberg-go/catalog"
 	_ "github.com/apache/iceberg-go/catalog/rest" // registers the "rest" catalog type via init()
+	iceio "github.com/apache/iceberg-go/io"
 	_ "github.com/apache/iceberg-go/io/gocloud"   // registers the S3/GCS/Azure file-IO schemes
 	"github.com/apache/iceberg-go/table"
 )
@@ -39,6 +40,34 @@ func LoadCatalog(ctx context.Context, cfg *Config) (catalog.Catalog, error) {
 	return catalog.Load(ctx, "lakekeeper", CatalogProps(cfg))
 }
 
+// loadTable returns a lake table, optionally re-pointing its S3 I/O at an
+// overridden endpoint. Lakekeeper advertises the in-network S3 endpoint
+// (http://minio:9000) in its table config, which iceberg-go lets override the
+// client props. Inside the compose network that name resolves; from the host it
+// does not. When DQ_S3_ENDPOINT_OVERRIDE is set (host runs), the table is
+// rebuilt with the override plus the static MinIO creds so it reaches the
+// published port instead of an unresolvable hostname. Container runs leave it
+// empty and keep Lakekeeper's vended STS credentials untouched.
+func loadTable(ctx context.Context, cfg *Config, cat catalog.Catalog, ident table.Identifier) (*table.Table, error) {
+	tbl, err := cat.LoadTable(ctx, ident)
+	if err != nil {
+		return nil, err
+	}
+	if cfg.S3EndpointOverride == "" {
+		return tbl, nil
+	}
+	props := CatalogProps(cfg)
+	props["s3.endpoint"] = cfg.S3EndpointOverride
+	props["s3.path-style-access"] = "true" // MinIO
+	return table.New(
+		tbl.Identifier(),
+		tbl.Metadata(),
+		tbl.MetadataLocation(),
+		iceio.LoadFSFunc(props, tbl.Location()),
+		cat,
+	), nil
+}
+
 // IcebergIdent maps a Postgres table name to its Iceberg table identifier,
 // e.g. "inventory.customers" -> {cdc, dbz_inventory_customers}.
 func IcebergIdent(cfg *Config, pgTable string) table.Identifier {
@@ -51,7 +80,7 @@ func IcebergIdent(cfg *Config, pgTable string) table.Identifier {
 // iceberg-go applies equality and positional deletes during the scan, so each
 // returned row is the live version for that key.
 func ScanRows(ctx context.Context, cfg *Config, cat catalog.Catalog, pgTable, pkCol, nullCol string) ([]Row, error) {
-	tbl, err := cat.LoadTable(ctx, IcebergIdent(cfg, pgTable))
+	tbl, err := loadTable(ctx, cfg, cat, IcebergIdent(cfg, pgTable))
 	if err != nil {
 		return nil, err
 	}
@@ -190,7 +219,7 @@ func valueAt(a arrow.Array, i int) any {
 // LastSnapshotMs returns the current snapshot timestamp (ms) of a lake table.
 // ok is false when the table has no snapshot yet.
 func LastSnapshotMs(ctx context.Context, cfg *Config, cat catalog.Catalog, pgTable string) (ms int64, ok bool, err error) {
-	tbl, err := cat.LoadTable(ctx, IcebergIdent(cfg, pgTable))
+	tbl, err := loadTable(ctx, cfg, cat, IcebergIdent(cfg, pgTable))
 	if err != nil {
 		return 0, false, err
 	}
@@ -229,7 +258,7 @@ func LiveCount(ctx context.Context, cfg *Config, cat catalog.Catalog, pgTable st
 // equality-delete files, which requires the delete column (the pk) to be part
 // of the projection.
 func LiveValues(ctx context.Context, cfg *Config, cat catalog.Catalog, pgTable, column string) ([]any, error) {
-	tbl, err := cat.LoadTable(ctx, IcebergIdent(cfg, pgTable))
+	tbl, err := loadTable(ctx, cfg, cat, IcebergIdent(cfg, pgTable))
 	if err != nil {
 		return nil, err
 	}

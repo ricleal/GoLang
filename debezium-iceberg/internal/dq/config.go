@@ -29,6 +29,7 @@ type Config struct {
 	IcebergURI  string
 	IcebergWh   string
 	S3Endpoint  string
+	S3EndpointOverride string
 	S3Key       string
 	S3Secret    string
 	S3Region    string
@@ -103,6 +104,7 @@ func LoadConfig() *Config {
 		IcebergURI:       os.Getenv("DQ_ICEBERG_URI"),
 		IcebergWh:        envOr("DQ_ICEBERG_WAREHOUSE", "lakehouse"),
 		S3Endpoint:       envOr("DQ_S3_ENDPOINT", ""),
+		S3EndpointOverride: envOr("DQ_S3_ENDPOINT_OVERRIDE", ""),
 		S3Key:            os.Getenv("DQ_S3_KEY"),
 		S3Secret:         os.Getenv("DQ_S3_SECRET"),
 		S3Region:         envOr("DQ_S3_REGION", "local-01"),
