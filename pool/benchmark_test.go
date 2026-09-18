@@ -4,15 +4,25 @@ package main
 
 import (
 	"bytes"
+	"sync"
 	"testing"
 )
 
 // warmPool populates the current P's local pool so the first measured Get
 // does not pay for the New() allocation.
 func warmPool() {
-	p := logBufferPool.Get().(*bytes.Buffer)
-	p.Reset()
-	logBufferPool.Put(p)
+	for i := 0; i < nWorkers; i++ {
+		logBufferPools[i] = sync.Pool{
+			New: func() any {
+				return new(bytes.Buffer)
+			},
+		}
+
+		buf := logBufferPools[i].Get().(*bytes.Buffer)
+		buf.Reset()
+		logBufferPools[i].Put(buf)
+
+	}
 }
 
 func BenchmarkPooledReuse(b *testing.B) {
@@ -22,11 +32,11 @@ func BenchmarkPooledReuse(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		// TODO: implement the pooled reuse logic
-		buf := logBufferPool.Get().(*bytes.Buffer)
+		buf := logBufferPools[i%nWorkers].Get().(*bytes.Buffer)
 		buf.Reset()
 		// Simulate some work with the buffer
 		buf.WriteString("benchmark")
-		logBufferPool.Put(buf)
+		logBufferPools[i%nWorkers].Put(buf)
 	}
 }
 
@@ -36,7 +46,7 @@ func BenchmarkPooledReuseBufferUsage(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		buf := logBufferPool.Get().(*bytes.Buffer)
+		buf := logBufferPools[i%nWorkers].Get().(*bytes.Buffer)
 
 		buf.WriteString(`{"time":"2024-06-01T12:00:00Z","number":"1","duration":"100ms"}`)
 		buf.WriteString("\n")
@@ -50,7 +60,7 @@ func BenchmarkPooledReuseBufferUsage(b *testing.B) {
 		buf.Reset()
 		// Simulate some work with the buffer
 		buf.WriteString("benchmark")
-		logBufferPool.Put(buf)
+		logBufferPools[i%nWorkers].Put(buf)
 	}
 }
 
